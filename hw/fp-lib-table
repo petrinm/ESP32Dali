@@ -1,0 +1,4 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "ESPDali")(type "KiCad")(uri "${KIPRJMOD}/ESPDali.pretty")(options "")(descr ""))
+)
