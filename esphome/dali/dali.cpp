@@ -25,7 +25,7 @@ static const char *TAG = "dali_interface";
 
 /*******************************************************************************
  * Define DALI timing values. One Bit on a DALI bus is
- * 833,33µs (1200Baud) which corresponds to 2TE.
+ * 833.33µs (1200 bauds) which corresponds to 2TE.
  ******************************************************************************/
 
 #define TE            (417)                     // half bit time = 417 usec
@@ -50,30 +50,8 @@ static const char *TAG = "dali_interface";
   #define MAX_2TE     (2*TE + (2*(TE/5)))       // maximum full bit time
 #endif
 
-
 #define BACKWARD_FRAME_BIT_LENGTH     18 // two byte commands have 34 bit in total (including start bit)
 
-
-
-
-
-typedef enum daliMsgTypeTag
-{
-  DALI_MSG_UNDETERMINED    = 0,
-  DALI_MSG_SHORT_ADDRESS   = 1,
-  DALI_MSG_GROUP_ADDRESS   = 2,
-  DALI_MSG_BROADCAST       = 4,
-  DALI_MSG_SPECIAL_COMMAND = 8
-} daliMsgType_t;
-
-typedef enum answerTypeTag
-{
-  ANSWER_NOT_AVAILABLE = 0,
-  ANSWER_NOTHING_RECEIVED,
-  ANSWER_GOT_DATA,
-  ANSWER_INVALID_DATA,
-  ANSWER_TOO_EARLY
-} answer_t;
 
 
 /* State machine states: */
@@ -91,84 +69,12 @@ typedef enum stateTag
 } MASTER_STATE;
 
 
-#if 1
-
-uint32_t DALI_Encode(uint16_t forwardFrame)
-{
-  uint32_t convertedForwardFrame = 0;
-  int8_t i;
-
-  for (int i = 15; i >= 0; i--)
-  {
-    if (forwardFrame & (1 << i))
-    {
-      // shift in bits values '0' and '1'
-      convertedForwardFrame <<= 1;
-      convertedForwardFrame <<= 1;
-      convertedForwardFrame |= 1;
-    }
-    else
-    {
-      // shift in bits values '1' and '0'
-      convertedForwardFrame <<= 1;
-      convertedForwardFrame |= 1;
-      convertedForwardFrame <<= 1;
-    }
-  }
-  return convertedForwardFrame;
-}
-#else
-
-uint32_t DALI_Encode(uint16_t forwardFrame)
-{
-  uint32_t convertedForwardFrame = 0; //BI_PHASE_HIGH;
-  for (int i = 0; i < 16; i++)
-  {
-    convertedForwardFrame <<= 2;
-    if ((forwardFrame & 0x8000) != 0)
-      convertedForwardFrame |= BI_PHASE_HIGH;
-    else
-      convertedForwardFrame |= BI_PHASE_LOW;
-    forwardFrame <<= 1;
-  }
-  return convertedForwardFrame;
-}
-
-#endif
-
-
-static bool DALI_Decode(uint32_t rawData, uint16_t *pBackwardFrame)
-{
-  uint16_t backward_frame = 0;
-  for (int i = 0; i < 8; i++)
-  {
-    backward_frame >>= 1;
-    switch (rawData & BI_PHASE_MASK)
-    {
-    case BI_PHASE_HIGH:
-      // We shift a 1 into backward_frame from MSB to LSB position
-      backward_frame |= 0x8000;
-      break;
-    case BI_PHASE_LOW:
-      break;
-    default:
-      return false;
-    }
-    rawData >>= 2;
-  }
-
-  *pBackwardFrame = backward_frame;
-  return true;
-}
-
-
-
 void inline DALI_SetOutputHigh(DALIState* driver) {
-  driver->tx_pin->digital_write(true);
+  driver->tx_pin->digital_write(false); // INVERTED!!!
 }
 
 void inline DALI_SetOutputLow(DALIState *driver) {
-  driver->tx_pin->digital_write(false);
+  driver->tx_pin->digital_write(true); // INVERTED!!!
 }
 
 bool inline DALI_GetInput(DALIState *driver) {
@@ -225,6 +131,7 @@ static void IRAM_ATTR HOT timer_interrupt() // DALIState *driver);
        * Sending stop bits
        */
 
+      // High state to free the bus
       DALI_SetOutputHigh(driver);
 
       // The first half of the first stop bit has just been output.
@@ -252,7 +159,7 @@ static void IRAM_ATTR HOT timer_interrupt() // DALIState *driver);
        * Wait for
        */
 
-      //driver->led->digital_write(false);
+      DALI_SetOutputHigh(driver);
 
       // Setup the first window limit for the slave answer.
       // The slave should not respond before 7TE.
@@ -311,16 +218,15 @@ static void IRAM_ATTR HOT timer_interrupt() // DALIState *driver);
 
       // Disable capture
       driver->rx_pin->detach_interrupt();
+      DALI_SetOutputHigh(driver);
 
       driver->state = MS_SETTLING_BEFORE_IDLE;
       break;
 
     case MS_SETTLING_BEFORE_IDLE:
       /*
-       *
+       * Settling before the bus is considered idle/available again.
        */
-
-      //driver->led->digital_write(false);
 
       timerStop(driver->timer);
       driver->rx_pin->detach_interrupt();
@@ -333,6 +239,7 @@ static void IRAM_ATTR HOT timer_interrupt() // DALIState *driver);
       /*
        * Fault state
        */
+      DALI_SetOutputHigh(driver);
       timerStop(driver->timer);
       driver->rx_pin->detach_interrupt();
       driver->state = MS_IDLE;
@@ -342,15 +249,14 @@ static void IRAM_ATTR HOT timer_interrupt() // DALIState *driver);
 
 static void IRAM_ATTR HOT gpio_interrupt(DALIState *driver)
 {
-
   switch (driver->state) {
     case MS_WAITING_FOR_SLAVE_START_WINDOW:
       /*
-       *
+       * The slave should not have answered yet, it came too early!!!!
        */
-      // slave should not answer yet, it came too early!!!!
-      // SET_TIMER_REG_CCR(0); // disable capture
+      timerStop(driver->timer);
       driver->rx_pin->detach_interrupt();
+      driver->state = MS_IDLE;
       break;
 
     case MS_WAITING_FOR_SLAVE_START: {
@@ -360,18 +266,18 @@ static void IRAM_ATTR HOT gpio_interrupt(DALIState *driver)
 
       // Set receive timeout time.
       timerAlarmWrite(driver->timer, 22 * MAX_TE, false);
+
+      // Clear timer counter so we can measure the pulse length
       timerWrite(driver->timer, 0);
 
       driver->backward_frame <<= 1;
 
       bool DaliBusLevel = DALI_GetInput(driver);
-
       if (DaliBusLevel)
         driver->backward_frame |= BI_PHASE_HIGH;
 
-      // increment position counter by 1
+      // Increment bit counter by 1
       driver->bitcount += 1;
-
       driver->state = MS_RECEIVING_ANSWER;
       break;
     }
@@ -418,15 +324,14 @@ static void IRAM_ATTR HOT gpio_interrupt(DALIState *driver)
         // The idle timeout (MR0) will set us back to receive mode...
         driver->bitcount = 0;
         driver->backward_frame = 0;
-        //driver->state = DALI_PD_STATE_IDLE;
+        driver->state = MS_IDLE;
 
         driver->rx_pin->detach_interrupt();
-        //gpio_intr_disable(driver->rx_pin);
 
         break;
       }
 
-      // check if we have receive all bits... this must be 34
+      // Check if we have receive all bits...
       if (driver->bitcount == BACKWARD_FRAME_BIT_LENGTH)
       {
         // we are ready now... we wait for STOP bits using MR2 interrupt.
@@ -434,8 +339,8 @@ static void IRAM_ATTR HOT gpio_interrupt(DALIState *driver)
         timerAlarmWrite(driver->timer, 22 * MAX_TE, false);
 
         driver->rx_pin->detach_interrupt();
-        //gpio_intr_disable(driver->rx_pin);
 
+        // Goto idle via settling state to avoid spam.
         driver->state = MS_SETTLING_BEFORE_IDLE;
       }
 
@@ -451,12 +356,15 @@ static void IRAM_ATTR HOT gpio_interrupt(DALIState *driver)
 
 void DALIInterface::setup()
 {
-  ESP_LOGD(TAG, "DALI setup");
+  int div = getApbFrequency() / 1000000;
+  ESP_LOGD(TAG, "DALI setup %d", div);
 
   assert(gbl_driver == nullptr);
-
   DALIState *driver = &driver_;
   gbl_driver = driver;
+
+  // Force the DALI high aka disable pull down
+  DALI_SetOutputHigh(driver);
 
   /*
    * Setup timer
@@ -490,6 +398,50 @@ void DALIInterface::dump_config()
   LOG_PIN("  rx_pin: ", this->driver_.rx_pin);
 }
 
+uint32_t DALIInterface::DALI_Encode(uint16_t forwardFrame)
+{
+  uint32_t coded = 0;
+  for (int i = 15; i >= 0; i--) // MSB to LSB
+  {
+    if (forwardFrame & (1 << i))
+    {
+      coded <<= 2;
+      coded |= 0b01;
+    }
+    else
+    {
+      coded <<= 2;
+      coded |= 0b10;
+    }
+  }
+  return coded;
+}
+
+bool DALIInterface::DALI_Decode(uint32_t rawData, uint16_t *pBackwardFrame)
+{
+  uint16_t backward_frame = 0;
+  for (int i = 0; i < 8; i++)
+  {
+    backward_frame >>= 1;
+    switch (rawData & BI_PHASE_MASK)
+    {
+    case BI_PHASE_HIGH:
+      // We shift a 1 into backward_frame from MSB to LSB position
+      backward_frame |= 0x8000;
+      break;
+    case BI_PHASE_LOW:
+      break;
+    default:
+      return false;
+    }
+    rawData >>= 2;
+  }
+
+  *pBackwardFrame = backward_frame;
+  return true;
+}
+
+
 void DALIInterface::search()
 {
   // https://github.com/sde1000/python-dali/blob/master/examples/find_ballasts.py
@@ -499,25 +451,38 @@ void DALIInterface::search()
 
 void DALIInterface::send_forward_frame(uint16_t forwardFrame, bool repeat)
 {
-
-
-  // driver->led->digital_write(true);
   DALIState *driver = &driver_;
 
   driver->state = MS_TX_SECOND_HALF_START_BIT;
   driver->waitForAnswer = false;
   driver->forward_frame = DALI_Encode(forwardFrame);
 
-  DALI_SetOutputHigh(driver);;
+  // Pull down to indicate first half-bit of start bit
+  DALI_SetOutputLow(driver);
 
   // Activate the timer module to output the forward frame
   timerAlarmWrite(driver->timer, TE, true);
   timerAlarmEnable(driver->timer);
+  timerRestart(driver->timer);
+  timerStart(driver->timer);
 
-  // Wait for the transmission to happen
+  // Wait for the transmission to happen in the timer/gpio interrupt
+  // Components should block for at most 30 ms
+  int timeout = 10;
   while (driver->state != MS_IDLE) {
-    delay(5);
+    //ESP_LOGD(TAG, "waiting.. %d %d ", driver->state, debug);
+    delay(3);
+    timeout--;
+    if (timeout == 0) {
+      //ESP_LOGD(TAG, "timeout.. %d %d ", driver->state, debug);
+      // Timeout
+      DALI_SetOutputHigh(driver);
+      return;
+    }
   }
+
+  DALI_SetOutputHigh(driver);
+  //ESP_LOGD(TAG, "done... %d %d ", driver->state, debug);
 
   if (driver->waitForAnswer)
   {
@@ -529,13 +494,10 @@ void DALIInterface::send_forward_frame(uint16_t forwardFrame, bool repeat)
       //return driver->backward_frame;
     }
     else {
-      ESP_LOGD(TAG, "Failed to decode backward frame: %x", driver->backward_frame);
+      ESP_LOGE(TAG, "Failed to decode backward frame: %x", driver->backward_frame);
     }
 
-
-    return;
   }
-  //answer_t
 }
 
 
@@ -545,41 +507,199 @@ void DALIInterface::send_dapc(uint8_t address, uint8_t power)
   send_forward_frame((0x3f & address) << 9 | power);
 }
 
-void DALIInterface::send_off(uint8_t address)
+void DALIInterface::off(uint8_t address)
 {
-  ESP_LOGD(TAG, "send_off: address=%d", address);
+  ESP_LOGD(TAG, "off: address=%d", address);
   send_forward_frame((0x3f & address) << 9 | 0x0100 | DALI_CMD_OFF);
 }
 
-void DALIInterface::send_up(uint8_t address)
+void DALIInterface::up(uint8_t address)
 {
-  ESP_LOGD(TAG, "send_up: address=%d", address);
+  ESP_LOGD(TAG, "up: address=%d", address);
   send_forward_frame((0x3f & address) << 9 | 0x0100 | DALI_CMD_UP, true);
 }
 
-void DALIInterface::send_down(uint8_t address)
+void DALIInterface::down(uint8_t address)
 {
-  ESP_LOGD(TAG, "send_down: address=%d", address);
+  ESP_LOGD(TAG, "down: address=%d", address);
   send_forward_frame((0x3f & address) << 9 | 0x0100 | DALI_CMD_DOWN);
 }
 
-void DALIInterface::send_goto_scene(uint8_t address, uint8_t scene)
+void DALIInterface::goto_scene(uint8_t address, uint8_t scene)
 {
-  ESP_LOGD(TAG, "send_goto_scene: address=%d, scene=%d", address, scene);
-  send_forward_frame((0x3f & address) << 9 | 0x0100 | DALI_CMD_GO_TO_SCENE);
+  ESP_LOGD(TAG, "goto_scene: address=%d, scene=%d", address, scene);
+  send_forward_frame((0x3f & address) << 9 | 0x0100 | (DALI_CMD_GO_TO_SCENE + scene));
 }
 
-void DALIInterface::send_set_fade_time(uint8_t address, uint8_t fade_time)
+void DALIInterface::set_max_level(uint8_t address, uint8_t level)
 {
-  ESP_LOGD(TAG, "send_set_fade_time  address=%d, fade time=%d", address, fade_time);
+  ESP_LOGD(TAG, "set_max_level: address=%d, level=%d", address, level);
+  send_forward_frame((DALI_CMD_DTR0_DATA << 8) | level);
+  send_forward_frame((0x3f & address) << 9 | 0x0100 | DALI_CMD_SET_MAX_LEVEL);
+  // TODO: Perform twice
+}
+
+void DALIInterface::set_min_level(uint8_t address, uint8_t level)
+{
+  ESP_LOGD(TAG, "set_min_level: address=%d, level=%d", address, level);
+  send_forward_frame((DALI_CMD_DTR0_DATA << 8) | level);
+  send_forward_frame((0x3f & address) << 9 | 0x0100 | DALI_CMD_SET_MIN_LEVEL);
+  // TODO: Perform twice
+}
+
+void DALIInterface::set_on_power_level(uint8_t address, uint8_t level)
+{
+  ESP_LOGD(TAG, "set_on_power_level: address=%d, level=%d", address, level);
+  send_forward_frame((DALI_CMD_DTR0_DATA << 8) | level);
+  send_forward_frame((0x3f & address) << 9 | 0x0100 | DALI_CMD_SET_POWER_ON_LEVEL);
+  // TODO: Perform twice
+}
+
+void DALIInterface::set_fade_time(uint8_t address, uint8_t fade_time)
+{
+  ESP_LOGD(TAG, "set_fade_time: address=%d, fade_time=%d", address, fade_time);
+  send_forward_frame((DALI_CMD_DTR0_DATA << 8) | fade_time);
   send_forward_frame((0x3f & address) << 9 | 0x0100 | DALI_CMD_SET_FADE_TIME);
+  // TODO: Perform twice
 }
 
-void DALIInterface::send_set_fade_rate(uint8_t address, uint8_t fade_rate)
+void DALIInterface::set_fade_rate(uint8_t address, uint8_t fade_rate)
 {
-  ESP_LOGD(TAG, "send_set_fade_rate  address=%d, fade rate=%d", address, fade_rate);
+  ESP_LOGD(TAG, "set_fade_rate: address=%d, fade_rate=%d", address, fade_rate);
+  send_forward_frame((DALI_CMD_DTR0_DATA << 8) | fade_rate);
   send_forward_frame((0x3f & address) << 9 | 0x0100 | DALI_CMD_SET_FADE_RATE);
+  // TODO: Perform twice
 }
+
+void DALIInterface::set_extended_fade_time(uint8_t address, uint8_t fade_time)
+{
+  ESP_LOGD(TAG, "set_extended_fade_time: address=%d, fade_time=%d", address, fade_time);
+  send_forward_frame((DALI_CMD_DTR0_DATA << 8) | fade_time);
+  send_forward_frame((0x3f & address) << 9 | 0x0100 | DALI_CMD_SET_EXTENDED_FADE_TIME);
+}
+
+void DALIInterface::set_scene(uint8_t address, uint8_t scene, uint8_t level)
+{
+  ESP_LOGD(TAG, "set_scene: address=%d, scene=%d, level=%d", address, scene, level);
+  send_forward_frame((DALI_CMD_DTR0_DATA << 8) | level);
+  send_forward_frame((0x3f & address) << 9 | 0x0100 | (DALI_CMD_SET_SCENE + scene));
+  // TODO: Perform twice
+}
+
+void DALIInterface::remove_from_scene(uint8_t address, uint8_t scene)
+{
+  ESP_LOGD(TAG, "remove_from_scene: address=%d, scene=%d", address, scene);
+  send_forward_frame((0x3f & address) << 9 | 0x0100 | (DALI_CMD_REMOVE_FROM_SCENE + scene));
+  // TODO: Perform twice
+}
+
+void DALIInterface::add_to_group(uint8_t address, uint8_t group)
+{
+  ESP_LOGD(TAG, "add_to_group: address=%d, group=%d", address, group);
+  send_forward_frame((0x3f & address) << 9 | 0x0100 | (DALI_CMD_ADD_TO_GROUP + group));
+  // TODO: Perform twice
+}
+
+void DALIInterface::remove_from_group(uint8_t address, uint8_t group)
+{
+  ESP_LOGD(TAG, "remove_from_group: address=%d, group=%d", address, group);
+  send_forward_frame((0x3f & address) << 9 | 0x0100 | (DALI_CMD_REMOVE_FROM_GROUP + group));
+  // TODO: Perform twice
+}
+
+void DALIInterface::set_short_address(uint8_t old_address, uint8_t new_address)
+{
+  ESP_LOGD(TAG, "set_short_address: old_address=%d, new_address=%d", old_address, new_address);
+  send_forward_frame((DALI_CMD_DTR0_DATA << 8) | new_address);
+  send_forward_frame((0x3f & old_address) << 9 | 0x0100 | DALI_CMD_SET_SHORT_ADDRESS);
+}
+
+void DALIInterface::enable_write_memory(uint8_t address)
+{
+  ESP_LOGD(TAG, "enable_write_memory: address=%d", address);
+  send_forward_frame((0x3f & address) << 9 | 0x0100 | DALI_CMD_ENABLE_WRITE_MEMORY);
+}
+
+void DALIInterface::write_memory(uint8_t location, uint8_t bank, uint8_t value)
+{
+  ESP_LOGD(TAG, "write_memory: location=%d, bank=%d, value=%d", location, bank, value);
+  send_forward_frame((DALI_CMD_DTR0_DATA << 8) | location);
+  send_forward_frame((DALI_CMD_DTR1_DATA << 8) | bank);
+  send_forward_frame((DALI_CMD_WRITE_MEMORY_LOCATION_NO_REPLY << 8) | value);
+}
+
+void DALIInterface::read_memory(uint8_t address, uint8_t location, uint8_t bank)
+{
+  ESP_LOGD(TAG, "read_memory: address=%d, location=%d, bank=%d", address, location, bank);
+  send_forward_frame((DALI_CMD_DTR0_DATA << 8) | location);
+  send_forward_frame((DALI_CMD_DTR1_DATA << 8) | bank);
+  uint8_t value;
+  send_forward_frame((0x3f & address) << 9 | 0x0100 | DALI_CMD_READ_MEMORY_LOCATION, value);
+  ESP_LOGD(TAG, "   value=%d", value);
+}
+
+void DALIInterface::send_xcoord(uint8_t address, unsigned int coord)
+{
+  ESP_LOGD(TAG, "send_xcoord: address=%d, xcoord=%d", address, coord);
+  send_forward_frame((DALI_CMD_DTR0_DATA << 8) | (0xFF & (coord >> 0))); // LSB
+  send_forward_frame((DALI_CMD_DTR1_DATA << 8) | (0xFF & (coord >> 8))); // MSB
+  send_forward_frame((0x3f & address) << 9 | DALI_CMD_SET_TEMPORARY_X_COORDINATE);
+}
+
+void DALIInterface::send_ycoord(uint8_t address, unsigned int coord)
+{
+  ESP_LOGD(TAG, "send_xcoord: address=%d, ycoord=%d", address, coord);
+  send_forward_frame((DALI_CMD_DTR0_DATA << 8) | (0xFF & (coord >> 0))); // LSB
+  send_forward_frame((DALI_CMD_DTR1_DATA << 8) | (0xFF & (coord >> 8))); // MSB
+  send_forward_frame((0x3f & address) << 9 | DALI_CMD_SET_TEMPORARY_Y_COORDINATE);
+}
+
+void DALIInterface::set_cct(uint8_t address, unsigned int kelvin)
+{
+  if (kelvin < 2000 || kelvin > 6500) {
+    ESP_LOGE(TAG, "set_cct: invalid ct %d", kelvin);
+    return;
+  }
+
+  unsigned int mirek = (1000000 / kelvin);
+  ESP_LOGD(TAG, "send_cct: address=%d, mirek=%d", address, mirek);
+  send_forward_frame((DALI_CMD_DTR0_DATA << 8) | (0xFF & (mirek >> 0))); // LSB
+  send_forward_frame((DALI_CMD_DTR1_DATA << 8) | (0xFF & (mirek >> 8))); // MSB
+  send_forward_frame((0x3f & address) << 9 | DALI_CMD_SET_TEMPORARY_COLOUR_TEMPERATURE);
+  send_forward_frame((0x3f & address) << 9 | DALI_CMD_ACTIVATE);
+}
+
+void DALIInterface::set_tc_limit(uint8_t address, TemperatureLimit what, unsigned int limit)
+{
+  unsigned int mirek = (1000000 / limit);
+  ESP_LOGD(TAG, "set_tc_limit: address=%d, what=%d, mirek=%d", address, what, mirek);
+  send_forward_frame((DALI_CMD_DTR0_DATA << 8) | (0xFF & (mirek >> 0))); // LSB
+  send_forward_frame((DALI_CMD_DTR1_DATA << 8) | (0xFF & (mirek >> 8))); // MSB
+  send_forward_frame((DALI_CMD_DTR2_DATA << 8) | what);
+  send_forward_frame((0x3f & address) << 9 | DALI_CMD_STORE_COLOUR_TEMPERATURE_LIMIT);
+}
+
+void DALIInterface::set_device_type(uint8_t device_type)
+{
+  ESP_LOGD(TAG, "set_device_type: device_type=%d", device_type);
+  send_forward_frame((DALI_CMD_ENABLE_DEVICE_TYPE << 8) | device_type);
+}
+
+uint16_t DALIInterface::query_colour_value(uint8_t address, QueryColourValue query)
+{
+#if 0
+  // 62386-209, command 250, Note 2: start by sending "QUERY ACTUAL LEVEL"
+  send_forward_frame((0x3f & address) << 9 | DALI_CMD_QUERY_ACTUAL_LEVEL);
+  send_forward_frame((DALI_CMD_DTR0_DATA << 8) | query);
+
+  uint16_t msb, lsb;
+  send_forward_frame((0x3f & address) << 9 | DALI_CMD_QUERY_COLOUR_VALUE, msb);
+  send_forward_frame((0x3f & address) << 9 | DALI_CMD_QUERY_CONTENT_DTR0, lsb);
+  return (msb << 8) | lsb;
+#endif
+  return 0;
+}
+
 
 }  // namespace DALI
 }  // namespace esphome

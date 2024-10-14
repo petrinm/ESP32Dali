@@ -35,7 +35,7 @@ void DALIOutput::loop()
 
 void DALIOutput::dump_config() {
   ESP_LOGCONFIG(TAG, "DALIOutput");
-  ESP_LOGCONFIG(TAG, "   address: %.1f%%", address_);
+  ESP_LOGCONFIG(TAG, "   address: %d", address_);
   //ESP_LOGCONFIG(TAG, "   faderate: %.1f%%", faderate_);
   //ESP_LOGCONFIG(TAG, "   fadetme: %.1f%%", fadetime_);
 }
