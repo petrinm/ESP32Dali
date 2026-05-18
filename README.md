@@ -43,16 +43,32 @@ dali:
     inverted: true
 
 light:
+  # Dim-only gear on one short address:
   - platform: dali
     name: "LED strip"
     interface: dali_if
-    address: 5         # short address 0-63
-    # group: 2         # group 0-15 (alternative to address)
-    # broadcast: true  # all gear on the bus (alternative to address)
-    fadetime: 7        # DALI fade time index, 0-15 (default ~5.7 s)
-    faderate: 2        # DALI fade rate index, 0-15
-    # cold_white_color_temperature: 6500 K
-    # warm_white_color_temperature: 2700 K
+    address: 5
+    fadetime: 7
+    faderate: 2
+
+  # Dual-channel tunable white (two DAPC channels, two short addresses):
+  # - platform: dali
+  #   name: "TW panel"
+  #   interface: dali_if
+  #   cold_white_address: 0
+  #   warm_white_address: 1
+  #   cold_white_color_temperature: 6536 K
+  #   warm_white_color_temperature: 2000 K
+  #   fadetime: 7
+  #   faderate: 2
+
+  # DT8 colour gear on one address (DAPC + DT8 colour temperature command):
+  # - platform: dali
+  #   name: "DT8 lamp"
+  #   interface: dali_if
+  #   address: 5
+  #   cold_white_color_temperature: 6536 K
+  #   warm_white_color_temperature: 2000 K
 ```
 
 Build and flash with:

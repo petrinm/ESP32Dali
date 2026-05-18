@@ -10,11 +10,19 @@ namespace esphome {
 namespace DALI {
 
 /**
+ * @brief How tunable-white colour is driven on the bus.
+ */
+enum class CtMode : uint8_t {
+  NONE = 0,         ///< Dim only (DAPC on one address).
+  DT8 = 1,          ///< Single DT8 gear: DAPC + IEC 62386-209 colour temperature.
+  DUAL_CHANNEL = 2  ///< Two dim channels: DAPC on separate cold / warm addresses.
+};
+
+/**
  * @brief ESPHome light platform for a single DALI control gear.
  *
- * Drives brightness via DAPC (IEC 62386-102). When cold/warm white colour
- * temperature limits are configured, also advertises @c COLOR_TEMPERATURE
- * and drives DT8 @ref DALIInterface::set_cct.
+ * Supports plain dimming, DT8 colour temperature on one address, and
+ * dual-channel tunable white (cold + warm on two short addresses, DAPC only).
  *
  * Bus I/O is deferred to @ref loop at a fixed cadence so @ref write_state
  * stays non-blocking.
@@ -37,38 +45,54 @@ class DALILight : public light::LightOutput, public Component {
   void set_fade_time(int fade_time) { fadetime_ = fade_time; }
   void set_fade_rate(int fade_rate) { faderate_ = fade_rate; }
 
-  /** Coldest white point in mireds (from YAML cold_white_color_temperature). */
-  void set_min_mireds(float min_mireds) { min_mireds_ = min_mireds; }
+  void set_ct_mode(CtMode mode) { ct_mode_ = mode; }
 
-  /** Warmest white point in mireds (from YAML warm_white_color_temperature). */
+  void set_min_mireds(float min_mireds) { min_mireds_ = min_mireds; }
   void set_max_mireds(float max_mireds) { max_mireds_ = max_mireds; }
 
-  void set_color_temperature_enabled(bool enabled) { color_temperature_enabled_ = enabled; }
+  void set_cold_white_address(int address) { cold_white_address_ = address & 0x3F; }
+  void set_warm_white_address(int address) { warm_white_address_ = address & 0x3F; }
 
  protected:
   static constexpr uint32_t MIN_SEND_INTERVAL_MS = 500;
 
   uint8_t brightness_to_level_(float brightness) const;
   uint16_t ct_to_kelvin_(float color_temperature) const;
+  void write_state_dual_channel_(light::LightState *state);
+  void configure_gear_fade_(int address);
   void flush_();
 
   DALIInterface *interface_{nullptr};
 
+  CtMode ct_mode_{CtMode::NONE};
+
   int address_{0x7F};
+  int cold_white_address_{0};
+  int warm_white_address_{1};
   int fadetime_{1};
   int faderate_{2};
 
-  bool color_temperature_enabled_{false};
   float min_mireds_{0};
   float max_mireds_{0};
 
+  // Single-channel dim or DT8 brightness.
   uint8_t target_level_{0};
   uint8_t last_sent_level_{0xFF};
+
+  // DT8 colour temperature.
   uint16_t target_kelvin_{2700};
   uint16_t last_sent_kelvin_{0};
 
+  // Dual-channel tunable white.
+  uint8_t target_cold_level_{0};
+  uint8_t target_warm_level_{0};
+  uint8_t last_sent_cold_level_{0xFF};
+  uint8_t last_sent_warm_level_{0xFF};
+
   bool pending_brightness_{false};
   bool pending_cct_{false};
+  bool pending_cold_{false};
+  bool pending_warm_{false};
   uint32_t last_send_ms_{0};
 };
 
