@@ -2,6 +2,8 @@
 
 #if defined(USE_ARDUINO) && defined(USE_ESP32)
 
+#include <stdint.h>
+
 #include "esphome/core/component.h"
 #include "esphome/core/gpio.h"
 #include "esphome/core/hal.h"
@@ -17,26 +19,35 @@ namespace DALI {
 
 struct DALIState {
 
-  // Current state
-  unsigned int state;
+  // State-machine state. Updated by the timer/gpio ISRs; polled by the
+  // host wait loop in do_transfer_(). `volatile` to keep the compiler
+  // from caching the value across the FreeRTOS yield in delay().
+  volatile unsigned int state;
 
   // Manchester coded forward frame
   uint32_t forward_frame;
 
-  // Bit counter
-  uint32_t bitcount;
+  // Bit counter. Used by the TX path (counts half-bits sent, 0..32) and
+  // then reused by the RX path (counts half-bits received, 0..18).
+  volatile uint32_t bitcount;
 
-  // Flag to indicate wether a backward frame is expected
+  // Flag to indicate whether a backward frame is expected
   bool waitForAnswer;
 
-  // Received backwarf frame
-  uint32_t backward_frame;
+  // Received backward frame (captured bi-phase pairs).
+  volatile uint32_t backward_frame;
 
-  // Transmitter pin
+  // Transmitter pin (used outside ISRs)
   InternalGPIOPin *tx_pin;
 
-  // Receiver pin
+  // Receiver pin (used outside ISRs, optional)
   InternalGPIOPin *rx_pin;
+
+  // ISR-safe copies of the pins, populated in DALIInterface::setup().
+  // These are what the timer / gpio ISRs use to read and write GPIO so
+  // they don't depend on flash-resident GPIO helpers.
+  ISRInternalGPIOPin tx_isr_pin;
+  ISRInternalGPIOPin rx_isr_pin;
 
   // Timer
   hw_timer_t *timer;
@@ -141,6 +152,9 @@ class DALIInterface: public Component {
   void setup() override;
   void dump_config() override;
 
+  // The DALI bus must be up before any DALIOutput tries to talk on it.
+  float get_setup_priority() const override { return setup_priority::BUS; }
+
   // Search ballasts
   void search();
 
@@ -148,9 +162,15 @@ class DALIInterface: public Component {
   void set_tx_pin(InternalGPIOPin *tx_pin);
   void set_rx_pin(InternalGPIOPin *rx_pin);
 
-  /* */
+  /* Fire-and-forget forward frame. If `repeat` is true, the frame is
+   * transmitted twice in succession - DALI requires this for most
+   * configuration commands (per IEC 62386-102 section 11.5). */
   void send_forward_frame(uint16_t forward_frame, bool repeat=false);
-  void send_forward_frame(uint16_t forward_frame, uint16_t &response);
+
+  /* Forward frame followed by a backward-frame window. Returns true if a
+   * valid backward frame was received, and writes the decoded 8-bit
+   * response byte to `response`. */
+  bool send_forward_frame(uint16_t forward_frame, uint8_t &response);
 
   /* Send Direct Arc Power Control */
   void send_dapc(uint8_t address, uint8_t power);
@@ -234,8 +254,18 @@ protected:
   /* Perform Manchester coding to the forward frame payload bytes. */
   static uint32_t DALI_Encode(uint16_t forwardFrame);
 
-  /**/
-  static bool DALI_Decode(uint32_t rawData, uint16_t *pBackwardFrame);
+  /* Decode an 8-bit DALI backward frame from the captured raw bi-phase
+   * pairs. Returns true if the pairs are all valid Manchester encodings.
+   * The lower 8 bits of `rawData` correspond to data bit 0, and the
+   * upper 8 bits to data bit 7. */
+  static bool DALI_Decode(uint32_t rawData, uint8_t *pBackwardFrame);
+
+  /* Internal: perform one transfer. If `expect_response` is true, give
+   * the slave a backward-frame window and write the decoded response
+   * (if any) to *response. Returns true if the transfer completed
+   * successfully (and, when expecting a response, a valid response was
+   * received). */
+  bool do_transfer_(uint16_t forward_frame, bool expect_response, uint8_t *response);
 
 };
 

@@ -13,7 +13,9 @@ CONF_RX_PIN = 'rx_pin'
 DALI_ns = cg.esphome_ns.namespace('DALI')
 DALIInterface = DALI_ns.class_('DALIInterface', cg.Component)
 
-# Config schema for the usage in the device yaml
+# Note: MULTI_CONF is intentionally not set. The C++ implementation uses
+# a static global pointer (gbl_driver) to dispatch the hw_timer ISR, so
+# only one DALI bus per node is supported today.
 CONFIG_SCHEMA = cv.Schema({
     cv.GenerateID(): cv.declare_id(DALIInterface),
     cv.Required(CONF_TX_PIN): pins.gpio_output_pin_schema,

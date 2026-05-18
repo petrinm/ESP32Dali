@@ -106,6 +106,17 @@
 #define DALI_CMD_QUERY_EXTENDED_VERSION_NUMBER  0xFF // 255 - Returns the version number belonging to the device type or feature
 
 // SPECIAL COMMANDS
+//
+// These are NOT addressed commands - they are sent as a complete
+// `<opcode> <data>` 16-bit forward frame, with no YAAAAAAS address byte.
+// The opcode values below intentionally overlap with QUERY INSTRUCTION
+// opcodes (e.g. DALI_CMD_TERMINATE == DALI_CMD_QUERY_MAX_LEVEL == 0xA1);
+// they are distinguished only by *how* they are sent. Always use these
+// macros as the upper byte of a 16-bit frame, e.g.:
+//
+//     send_forward_frame((DALI_CMD_DTR0_DATA << 8) | data_byte);
+//
+// Do NOT OR them with an address or selector bit.
 #define DALI_CMD_TERMINATE                      0xA1 // 256 - Stops the control gear's initilization
 #define DALI_CMD_DTR0_DATA                      0xA3 // 257 - Loads a data byte into DTR0
 #define DALI_CMD_INITIALISE                     0xA5 // 258 - Initializes a control gear, command must be issued twice
