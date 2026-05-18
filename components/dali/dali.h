@@ -58,7 +58,7 @@ struct DALIState {
    * @brief @c true while a query forward frame's backward-frame window
    *        is open.
    */
-  bool waitForAnswer;
+  bool wait_for_answer;
 
   /**
    * @brief Raw captured bi-phase pairs from the most recent backward frame.
@@ -600,23 +600,23 @@ class DALIInterface: public Component {
    *     logical 0  -> 0b10  (high half then low half)
    *     logical 1  -> 0b01  (low half then high half)
    *
-   * @param forwardFrame 16-bit forward frame to encode.
+   * @param forward_frame 16-bit forward frame to encode.
    * @return 32-bit Manchester-coded representation, MSB-first.
    */
-  static uint32_t DALI_Encode(uint16_t forwardFrame);
+  static uint32_t DALI_Encode(uint16_t forward_frame);
 
   /**
    * @brief Decode an 8-bit DALI backward frame from captured bi-phase pairs.
    *
-   * The pairs are packed LSB-first in @p rawData: bits[1:0] correspond
+   * The pairs are packed LSB-first in @p raw_data: bits[1:0] correspond
    * to the LAST received pair (data bit 0) and bits[15:14] to the FIRST
    * (data bit 7). The decoded byte has data bit 0 in the LSB.
    *
-   * @param rawData Raw captured bi-phase pairs.
-   * @param[out] pBackwardFrame Decoded 8-bit response byte.
+   * @param raw_data Raw captured bi-phase pairs.
+   * @param[out] backward_frame_out Decoded 8-bit response byte.
    * @return @c true if all pairs are valid Manchester encodings.
    */
-  static bool DALI_Decode(uint32_t rawData, uint8_t *pBackwardFrame);
+  static bool DALI_Decode(uint32_t raw_data, uint8_t *backward_frame_out);
 
   /**
    * @brief Internal: perform one DALI forward (and optional backward) transfer.

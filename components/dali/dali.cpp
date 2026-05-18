@@ -188,7 +188,7 @@ static void IRAM_ATTR HOT timer_interrupt()
       DALI_SetOutputHigh(driver);
 
       // The first half of the first stop bit has just been output.
-      if (driver->waitForAnswer)
+      if (driver->wait_for_answer)
       {
         // Wait out the remainder of the 4 TE stop-bit window before
         // opening the slave's response window.
@@ -300,8 +300,8 @@ static void IRAM_ATTR HOT gpio_interrupt(DALIState *driver)
 
       driver->backward_frame <<= 1;
 
-      bool DaliBusLevel = DALI_GetInput(driver);
-      if (DaliBusLevel)
+      bool dali_bus_level = DALI_GetInput(driver);
+      if (dali_bus_level)
         driver->backward_frame |= BI_PHASE_HIGH;
 
       driver->bitcount += 1;
@@ -310,28 +310,28 @@ static void IRAM_ATTR HOT gpio_interrupt(DALIState *driver)
     }
     case MS_RECEIVING_ANSWER: {
       // Subsequent edge inside the backward frame - classify by width.
-      bool DaliBusLevel = DALI_GetInput(driver);
-      uint32_t CT = timerRead(driver->timer);
+      bool dali_bus_level = DALI_GetInput(driver);
+      uint32_t pulse_us = timerRead(driver->timer);
       timerWrite(driver->timer, 0);
 
-      if (MIN_2TE < CT && CT < MAX_2TE)
+      if (MIN_2TE < pulse_us && pulse_us < MAX_2TE)
       {
         // 2 TE pulse: spans two half-bits at the same level.
         driver->backward_frame <<= 2;
 
-        if (DaliBusLevel)
+        if (dali_bus_level)
           driver->backward_frame |= BI_PHASE_HIGH;
         else
           driver->backward_frame |= BI_PHASE_LOW;
 
         driver->bitcount += 2;
       }
-      else if (MIN_TE < CT && CT < MAX_TE)
+      else if (MIN_TE < pulse_us && pulse_us < MAX_TE)
       {
         // 1 TE pulse: single half-bit at the new level.
         driver->backward_frame <<= 1;
 
-        if (DaliBusLevel)
+        if (dali_bus_level)
           driver->backward_frame |= BI_PHASE_HIGH;
 
         driver->bitcount += 1;
@@ -385,7 +385,7 @@ void DALIInterface::setup()
   driver->bitcount = 0;
   driver->forward_frame = 0;
   driver->backward_frame = 0;
-  driver->waitForAnswer = false;
+  driver->wait_for_answer = false;
 
   // Configure pins and capture their ISR-safe handles. The handles are
   // used by the timer/gpio ISRs and so must be populated before any ISR
@@ -446,12 +446,12 @@ void DALIInterface::dump_config()
  *
  * See the matching declaration in `dali.h` for the bi-phase mapping.
  */
-uint32_t DALIInterface::DALI_Encode(uint16_t forwardFrame)
+uint32_t DALIInterface::DALI_Encode(uint16_t forward_frame)
 {
   uint32_t coded = 0;
   for (int i = 15; i >= 0; i--) // MSB to LSB
   {
-    if (forwardFrame & (1 << i))
+    if (forward_frame & (1 << i))
     {
       coded <<= 2;
       coded |= 0b01;
@@ -465,12 +465,12 @@ uint32_t DALIInterface::DALI_Encode(uint16_t forwardFrame)
   return coded;
 }
 
-bool DALIInterface::DALI_Decode(uint32_t rawData, uint8_t *pBackwardFrame)
+bool DALIInterface::DALI_Decode(uint32_t raw_data, uint8_t *backward_frame_out)
 {
   uint8_t backward_frame = 0;
   for (int i = 0; i < 8; i++)
   {
-    switch (rawData & BI_PHASE_MASK)
+    switch (raw_data & BI_PHASE_MASK)
     {
     case BI_PHASE_HIGH:
       backward_frame |= (1u << i);
@@ -480,10 +480,10 @@ bool DALIInterface::DALI_Decode(uint32_t rawData, uint8_t *pBackwardFrame)
     default:
       return false;
     }
-    rawData >>= 2;
+    raw_data >>= 2;
   }
 
-  *pBackwardFrame = backward_frame;
+  *backward_frame_out = backward_frame;
   return true;
 }
 
@@ -496,7 +496,7 @@ void DALIInterface::search()
   ESP_LOGW(TAG, "search(): not implemented yet");
 }
 
-bool DALIInterface::do_transfer_(uint16_t forwardFrame, bool expect_response, uint8_t *response)
+bool DALIInterface::do_transfer_(uint16_t forward_frame, bool expect_response, uint8_t *response)
 {
   DALIState *driver = &driver_;
 
@@ -506,8 +506,8 @@ bool DALIInterface::do_transfer_(uint16_t forwardFrame, bool expect_response, ui
   }
 
   driver->state = MS_TX_SECOND_HALF_START_BIT;
-  driver->waitForAnswer = expect_response;
-  driver->forward_frame = DALI_Encode(forwardFrame);
+  driver->wait_for_answer = expect_response;
+  driver->forward_frame = DALI_Encode(forward_frame);
   driver->backward_frame = 0;
   driver->bitcount = 0;
 
@@ -567,20 +567,20 @@ bool DALIInterface::do_transfer_(uint16_t forwardFrame, bool expect_response, ui
   return true;
 }
 
-void DALIInterface::send_forward_frame(uint16_t forwardFrame, bool repeat)
+void DALIInterface::send_forward_frame(uint16_t forward_frame, bool repeat)
 {
-  do_transfer_(forwardFrame, false, nullptr);
+  do_transfer_(forward_frame, false, nullptr);
   if (repeat) {
     // DALI configuration commands must be sent twice within 100 ms; the
     // state machine already inserts the >=22 TE settling time between
     // transfers, so back-to-back calls are fine.
-    do_transfer_(forwardFrame, false, nullptr);
+    do_transfer_(forward_frame, false, nullptr);
   }
 }
 
-bool DALIInterface::send_forward_frame(uint16_t forwardFrame, uint8_t &response)
+bool DALIInterface::send_forward_frame(uint16_t forward_frame, uint8_t &response)
 {
-  return do_transfer_(forwardFrame, true, &response);
+  return do_transfer_(forward_frame, true, &response);
 }
 
 
