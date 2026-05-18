@@ -763,6 +763,18 @@ void DALIInterface::set_cct(uint8_t address, unsigned int kelvin)
   send_forward_frame((0x7f & address) << 9 | 0x0100 | DALI_CMD_ACTIVATE);
 }
 
+void DALIInterface::set_rgb(uint8_t address, uint8_t red, uint8_t green, uint8_t blue)
+{
+  ESP_LOGD(TAG, "set_rgb: address=%d, r=%u, g=%u, b=%u", address, red, green, blue);
+  send_forward_frame((DALI_CMD_DTR0_DATA << 8) | red);
+  send_forward_frame((DALI_CMD_DTR1_DATA << 8) | green);
+  send_forward_frame((DALI_CMD_DTR2_DATA << 8) | blue);
+  send_forward_frame((DALI_CMD_ENABLE_DEVICE_TYPE << 8) | 8);
+  send_forward_frame((0x7f & address) << 9 | 0x0100 | DALI_CMD_SET_TEMPORARY_RGB_DIM_LEVEL);
+  send_forward_frame((DALI_CMD_ENABLE_DEVICE_TYPE << 8) | 8);
+  send_forward_frame((0x7f & address) << 9 | 0x0100 | DALI_CMD_ACTIVATE);
+}
+
 void DALIInterface::set_tc_limit(uint8_t address, TemperatureLimit what, unsigned int limit)
 {
   if (limit < 1000 || limit > 20000) {

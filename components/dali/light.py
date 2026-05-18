@@ -19,6 +19,7 @@ CONF_FADERATE = "faderate"
 CONF_FADETIME = "fadetime"
 CONF_COLD_WHITE_ADDRESS = "cold_white_address"
 CONF_WARM_WHITE_ADDRESS = "warm_white_address"
+CONF_DT8_RGB = "dt8_rgb"
 
 CtMode = DALI_ns.enum("CtMode")
 
@@ -35,6 +36,7 @@ def _validate_config(value):
     has_single = any(k in value for k in _SINGLE_ADDRESS_KEYS)
     has_ct_temps = all(k in value for k in _CT_TEMP_KEYS)
     has_partial_ct = any(k in value for k in _CT_TEMP_KEYS) and not has_ct_temps
+    dt8_rgb = value.get(CONF_DT8_RGB, False)
 
     if has_partial_dual:
         raise cv.Invalid(
@@ -64,6 +66,19 @@ def _validate_config(value):
             "warm_white_color_temperature for the HA colour-temperature range",
         )
 
+    if dt8_rgb:
+        if has_dual_addr:
+            raise cv.Invalid(f"{CONF_DT8_RGB} cannot be used with dual-channel addresses")
+        if has_ct_temps:
+            raise cv.Invalid(
+                f"{CONF_DT8_RGB} cannot be combined with colour temperature limits "
+                "(use one DT8 mode per light)",
+            )
+        if not has_single:
+            raise cv.Invalid(
+                f"{CONF_DT8_RGB} requires address, group, or broadcast",
+            )
+
     return value
 
 
@@ -81,6 +96,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_FADETIME): cv.int_range(min=0, max=15),
             cv.Optional(CONF_COLD_WHITE_COLOR_TEMPERATURE): cv.color_temperature,
             cv.Optional(CONF_WARM_WHITE_COLOR_TEMPERATURE): cv.color_temperature,
+            cv.Optional(CONF_DT8_RGB, default=False): cv.boolean,
         }
     ),
     cv.has_at_most_one_key(*_SINGLE_ADDRESS_KEYS),
@@ -98,9 +114,17 @@ async def to_code(config):
     cg.add(var.set_interface(interface))
 
     if CONF_COLD_WHITE_ADDRESS in config:
-        cg.add(var.set_ct_mode(CtMode.DUAL_CHANNEL))
+        cg.add(var.set_ct_mode(CtMode.DUAL_DAPC_CT))
         cg.add(var.set_cold_white_address(config[CONF_COLD_WHITE_ADDRESS]))
         cg.add(var.set_warm_white_address(config[CONF_WARM_WHITE_ADDRESS]))
+    elif config.get(CONF_DT8_RGB, False):
+        cg.add(var.set_ct_mode(CtMode.DT8_RGB))
+        if CONF_ADDRESS in config:
+            cg.add(var.set_address(config[CONF_ADDRESS]))
+        elif CONF_GROUP in config:
+            cg.add(var.set_group(config[CONF_GROUP]))
+        elif config.get(CONF_BROADCAST, False):
+            cg.add(var.set_broadcast())
     else:
         if CONF_ADDRESS in config:
             cg.add(var.set_address(config[CONF_ADDRESS]))
@@ -110,7 +134,7 @@ async def to_code(config):
             cg.add(var.set_broadcast())
 
         if CONF_COLD_WHITE_COLOR_TEMPERATURE in config:
-            cg.add(var.set_ct_mode(CtMode.DT8))
+            cg.add(var.set_ct_mode(CtMode.DT8_CT))
 
     if CONF_FADERATE in config:
         cg.add(var.set_fade_rate(config[CONF_FADERATE]))

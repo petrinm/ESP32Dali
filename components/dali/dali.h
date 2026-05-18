@@ -554,6 +554,17 @@ class DALIInterface: public Component {
   void set_cct(uint8_t address, unsigned int kelvin);
 
   /**
+   * @brief DT8: set temporary RGB dim levels and activate them.
+   *
+   * Loads @p red, @p green and @p blue into DTR0..2, issues
+   * SET TEMPORARY RGB DIM LEVEL, then ACTIVATE. Levels are 0..254
+   * (IEC 62386-209 arc-power scale).
+   *
+   * @param address 7-bit DALI address.
+   */
+  void set_rgb(uint8_t address, uint8_t red, uint8_t green, uint8_t blue);
+
+  /**
    * @brief DT8: store a colour-temperature limit on the gear.
    *
    * @param address 7-bit DALI address.

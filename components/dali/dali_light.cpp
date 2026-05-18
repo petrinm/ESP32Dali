@@ -14,12 +14,15 @@ static const char *TAG = "dali_light";
 light::LightTraits DALILight::get_traits() {
   light::LightTraits traits;
   switch (this->ct_mode_) {
-    case CtMode::DT8:
-    case CtMode::DUAL_CHANNEL:
+    case CtMode::DT8_CT:
+    case CtMode::DUAL_DAPC_CT:
       traits.set_supported_color_modes(
           {light::ColorMode::COLOR_TEMPERATURE, light::ColorMode::COLD_WARM_WHITE});
       traits.set_min_mireds(this->min_mireds_);
       traits.set_max_mireds(this->max_mireds_);
+      break;
+    case CtMode::DT8_RGB:
+      traits.set_supported_color_modes({light::ColorMode::RGB});
       break;
     case CtMode::NONE:
     default:
@@ -35,7 +38,7 @@ void DALILight::configure_gear_fade_(int address) {
 }
 
 void DALILight::setup() {
-  if (this->ct_mode_ == CtMode::DUAL_CHANNEL) {
+  if (this->ct_mode_ == CtMode::DUAL_DAPC_CT) {
     ESP_LOGD(TAG, "Configuring dual-channel CT: cold=0x%02X warm=0x%02X fade_time=%d fade_rate=%d",
              this->cold_white_address_, this->warm_white_address_, this->fadetime_, this->faderate_);
     this->configure_gear_fade_(this->cold_white_address_);
@@ -49,7 +52,8 @@ void DALILight::setup() {
 }
 
 void DALILight::loop() {
-  if (!this->pending_brightness_ && !this->pending_cct_ && !this->pending_cold_ && !this->pending_warm_) {
+  if (!this->pending_brightness_ && !this->pending_cct_ && !this->pending_rgb_ && !this->pending_cold_ &&
+      !this->pending_warm_) {
     return;
   }
 
@@ -65,13 +69,17 @@ void DALILight::loop() {
 void DALILight::dump_config() {
   ESP_LOGCONFIG(TAG, "DALILight");
   switch (this->ct_mode_) {
-    case CtMode::DUAL_CHANNEL:
-      ESP_LOGCONFIG(TAG, "  mode: dual-channel CT");
+    case CtMode::DUAL_DAPC_CT:
+      ESP_LOGCONFIG(TAG, "  mode: dual DAPC CT");
       ESP_LOGCONFIG(TAG, "  cold_white_address: 0x%02X", this->cold_white_address_);
       ESP_LOGCONFIG(TAG, "  warm_white_address: 0x%02X", this->warm_white_address_);
       break;
-    case CtMode::DT8:
-      ESP_LOGCONFIG(TAG, "  mode: DT8 colour temperature");
+    case CtMode::DT8_CT:
+      ESP_LOGCONFIG(TAG, "  mode: DT8 CT");
+      ESP_LOGCONFIG(TAG, "  address: 0x%02X", this->address_);
+      break;
+    case CtMode::DT8_RGB:
+      ESP_LOGCONFIG(TAG, "  mode: DT8 RGB");
       ESP_LOGCONFIG(TAG, "  address: 0x%02X", this->address_);
       break;
     default:
@@ -82,7 +90,7 @@ void DALILight::dump_config() {
   ESP_LOGCONFIG(TAG, "  fade_rate: %d", this->faderate_);
   ESP_LOGCONFIG(TAG, "  fade_time: %d", this->fadetime_);
   ESP_LOGCONFIG(TAG, "  min send interval: %u ms", (unsigned) MIN_SEND_INTERVAL_MS);
-  if (this->ct_mode_ != CtMode::NONE) {
+  if (this->ct_mode_ == CtMode::DT8_CT || this->ct_mode_ == CtMode::DUAL_DAPC_CT) {
     ESP_LOGCONFIG(TAG, "  color_temperature: %.1f - %.1f mireds", this->min_mireds_, this->max_mireds_);
   }
 }
@@ -139,12 +147,28 @@ void DALILight::write_state_dual_channel_(light::LightState *state) {
 }
 
 void DALILight::write_state(light::LightState *state) {
-  if (this->ct_mode_ == CtMode::DUAL_CHANNEL) {
+  if (this->ct_mode_ == CtMode::DUAL_DAPC_CT) {
     this->write_state_dual_channel_(state);
     return;
   }
 
-  if (this->ct_mode_ == CtMode::DT8) {
+  if (this->ct_mode_ == CtMode::DT8_RGB) {
+    float red;
+    float green;
+    float blue;
+    state->current_values_as_rgb(&red, &green, &blue);
+
+    this->target_red_level_ = this->brightness_to_level_(red);
+    this->target_green_level_ = this->brightness_to_level_(green);
+    this->target_blue_level_ = this->brightness_to_level_(blue);
+    this->pending_rgb_ = true;
+
+    ESP_LOGV(TAG, "write_state DT8 RGB: r=%.3f g=%.3f b=%.3f -> %u/%u/%u", red, green, blue, this->target_red_level_,
+             this->target_green_level_, this->target_blue_level_);
+    return;
+  }
+
+  if (this->ct_mode_ == CtMode::DT8_CT) {
     float color_temperature;
     float brightness;
     state->current_values_as_ct(&color_temperature, &brightness);
@@ -203,7 +227,7 @@ void DALILight::flush_() {
     }
   }
 
-  if (this->pending_cct_ && this->ct_mode_ == CtMode::DT8) {
+  if (this->pending_cct_ && this->ct_mode_ == CtMode::DT8_CT) {
     const uint16_t kelvin = this->target_kelvin_;
     this->pending_cct_ = false;
 
@@ -211,6 +235,22 @@ void DALILight::flush_() {
       ESP_LOGD(TAG, "set_cct -> %u K addr=0x%02X", kelvin, this->address_);
       this->interface_->set_cct(this->address_, kelvin);
       this->last_sent_kelvin_ = kelvin;
+    }
+  }
+
+  if (this->pending_rgb_ && this->ct_mode_ == CtMode::DT8_RGB) {
+    const uint8_t red = this->target_red_level_;
+    const uint8_t green = this->target_green_level_;
+    const uint8_t blue = this->target_blue_level_;
+    this->pending_rgb_ = false;
+
+    if (red != this->last_sent_red_level_ || green != this->last_sent_green_level_ ||
+        blue != this->last_sent_blue_level_) {
+      ESP_LOGD(TAG, "set_rgb -> r=%u g=%u b=%u addr=0x%02X", red, green, blue, this->address_);
+      this->interface_->set_rgb(this->address_, red, green, blue);
+      this->last_sent_red_level_ = red;
+      this->last_sent_green_level_ = green;
+      this->last_sent_blue_level_ = blue;
     }
   }
 }

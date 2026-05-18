@@ -13,15 +13,16 @@ namespace DALI {
  * @brief How tunable-white colour is driven on the bus.
  */
 enum class CtMode : uint8_t {
-  NONE = 0,         ///< Dim only (DAPC on one address).
-  DT8 = 1,          ///< Single DT8 gear: DAPC + IEC 62386-209 colour temperature.
-  DUAL_CHANNEL = 2  ///< Two dim channels: DAPC on separate cold / warm addresses.
+  NONE = 0,          ///< Dim only (DAPC on one address).
+  DT8_CT = 1,        ///< Single DT8 gear: DAPC + IEC 62386-209 colour temperature.
+  DUAL_DAPC_CT = 2,  ///< Two DAPC channels on separate cold / warm short addresses.
+  DT8_RGB = 3,       ///< Single DT8 gear: SET TEMPORARY RGB DIM LEVEL + ACTIVATE.
 };
 
 /**
  * @brief ESPHome light platform for a single DALI control gear.
  *
- * Supports plain dimming, DT8 colour temperature on one address, and
+ * Supports plain dimming, DT8 colour temperature or RGB on one address, and
  * dual-channel tunable white (cold + warm on two short addresses, DAPC only).
  *
  * Bus I/O is deferred to @ref loop at a fixed cadence so @ref write_state
@@ -89,8 +90,17 @@ class DALILight : public light::LightOutput, public Component {
   uint8_t last_sent_cold_level_{0xFF};
   uint8_t last_sent_warm_level_{0xFF};
 
+  // DT8 RGB.
+  uint8_t target_red_level_{0};
+  uint8_t target_green_level_{0};
+  uint8_t target_blue_level_{0};
+  uint8_t last_sent_red_level_{0xFF};
+  uint8_t last_sent_green_level_{0xFF};
+  uint8_t last_sent_blue_level_{0xFF};
+
   bool pending_brightness_{false};
   bool pending_cct_{false};
+  bool pending_rgb_{false};
   bool pending_cold_{false};
   bool pending_warm_{false};
   uint32_t last_send_ms_{0};

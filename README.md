@@ -51,24 +51,33 @@ light:
     fadetime: 7
     faderate: 2
 
-  # Dual-channel tunable white (two DAPC channels, two short addresses):
-  # - platform: dali
-  #   name: "TW panel"
-  #   interface: dali_if
-  #   cold_white_address: 0
-  #   warm_white_address: 1
-  #   cold_white_color_temperature: 6536 K
-  #   warm_white_color_temperature: 2000 K
-  #   fadetime: 7
-  #   faderate: 2
+# Dual DAPC CT (two DAPC channels, two short addresses):
+# - platform: dali
+#   name: "TW panel"
+#   interface: dali_if
+#   cold_white_address: 0
+#   warm_white_address: 1
+#   cold_white_color_temperature: 6536 K
+#   warm_white_color_temperature: 2000 K
+#   fadetime: 7
+#   faderate: 2
 
-  # DT8 colour gear on one address (DAPC + DT8 colour temperature command):
-  # - platform: dali
-  #   name: "DT8 lamp"
-  #   interface: dali_if
-  #   address: 5
-  #   cold_white_color_temperature: 6536 K
-  #   warm_white_color_temperature: 2000 K
+# DT8 colour gear on one address (DAPC + DT8 colour temperature command):
+# - platform: dali
+#   name: "DT8 lamp"
+#   interface: dali_if
+#   address: 5
+#   cold_white_color_temperature: 6536 K
+#   warm_white_color_temperature: 2000 K
+
+# DT8 RGB on one address (SET TEMPORARY RGB DIM LEVEL + ACTIVATE):
+# - platform: dali
+#   name: "RGB strip"
+#   interface: dali_if
+#   address: 3
+#   dt8_rgb: true
+#   fadetime: 7
+#   faderate: 2
 ```
 
 Build and flash with:
