@@ -273,7 +273,7 @@ class DALIInterface: public Component {
    * @brief Setup priority for ESPHome's component graph.
    *
    * @return Always @ref esphome::setup_priority::BUS so the bus is
-   *         fully up before any @ref DALIOutput tries to use it.
+   *         fully up before any @ref DALILight tries to use it.
    */
   float get_setup_priority() const override { return setup_priority::BUS; }
 

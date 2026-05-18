@@ -42,20 +42,17 @@ dali:
     number: 16
     inverted: true
 
-output:
+light:
   - platform: dali
-    id: dali_output
+    name: "LED strip"
     interface: dali_if
     address: 5         # short address 0-63
     # group: 2         # group 0-15 (alternative to address)
     # broadcast: true  # all gear on the bus (alternative to address)
     fadetime: 7        # DALI fade time index, 0-15 (default ~5.7 s)
     faderate: 2        # DALI fade rate index, 0-15
-
-light:
-  - platform: monochromatic
-    name: "LED strip"
-    output: dali_output
+    # cold_white_color_temperature: 6500 K
+    # warm_white_color_temperature: 2700 K
 ```
 
 Build and flash with:
