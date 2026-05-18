@@ -5,48 +5,47 @@
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
-
-
 namespace esphome {
 namespace DALI {
 
 static const char *TAG = "dali_interface";
 
-
-/*******************************************************************************
- * Typedefs and defines
- ******************************************************************************/
+// ============================================================================
+// Bi-phase / Manchester pair encoding
+// ============================================================================
 
 #define BI_PHASE_HIGH           0b01
 #define BI_PHASE_LOW            0b10
 #define BI_PHASE_MASK           0b11
 
+// ============================================================================
+// DALI bit timing. One DALI bit is 833.33 us (1200 baud) = 2 TE.
+// ============================================================================
 
-/*******************************************************************************
- * Define DALI timing values. One Bit on a DALI bus is
- * 833.33µs (1200 bauds) which corresponds to 2TE.
- ******************************************************************************/
+// Half-bit time in microseconds (TE).
+#define TE            (417)
 
-#define TE            (417)                     // half bit time = 417 usec
-
-/* Transmission timing, option to compensate for unequal physical layer delay in rising or falling edge*/
+// Optional offsets to compensate for asymmetric rise / fall delay of the
+// physical layer driver. Zero by default.
 #define TE_HIGH       (TE + 0)
 #define TE_LOW        (TE - 0)
 
 #define DALI_STOP_BIT_TIME          (4*TE)
-#define MIN_FORWARD_FRAME_DELAY     (22*TE)     // minimum time between two forward frames - 9.17ms ==> 22 x TE time
-#define BACKWARD_FRAME_DELAY        (12*TE)     // time between forward frame and backward frame >= 7TE
+// Minimum settling time between consecutive forward frames (~9.17 ms).
+#define MIN_FORWARD_FRAME_DELAY     (22*TE)
+// Required delay between forward frame and backward frame (>= 7 TE).
+#define BACKWARD_FRAME_DELAY        (12*TE)
 
-#if 0 /* strict receive timing according to specification  */
-  #define MIN_TE      (TE - 42)                 // minimum half bit time
-  #define MAX_TE      (TE + 42)                 // maximum half bit time
-  #define MIN_2TE     (2*TE - 83)               // minimum full bit time
-  #define MAX_2TE     (2*TE + 83)               // maximum full bit time
-#else /* More relaxed receive timing */
-  #define MIN_TE      (300)                     // minimum half bit time
-  #define MAX_TE      (550)                     // maximum half bit time
-  #define MIN_2TE     (2*TE - (2*(TE/5)))       // minimum full bit time
-  #define MAX_2TE     (2*TE + (2*(TE/5)))       // maximum full bit time
+#if 0 // Strict receive timing per the DALI specification.
+  #define MIN_TE      (TE - 42)
+  #define MAX_TE      (TE + 42)
+  #define MIN_2TE     (2*TE - 83)
+  #define MAX_2TE     (2*TE + 83)
+#else // Relaxed receive timing, used in practice for noisy buses.
+  #define MIN_TE      (300)
+  #define MAX_TE      (550)
+  #define MIN_2TE     (2*TE - (2*(TE/5)))
+  #define MAX_2TE     (2*TE + (2*(TE/5)))
 #endif
 
 // Backward frame length, in half-bits: start bit (2 half-bits) + 8 data
@@ -55,90 +54,120 @@ static const char *TAG = "dali_interface";
 #define BACKWARD_FRAME_BIT_LENGTH     18
 
 
-
-/* State machine states: */
-typedef enum stateTag
+/**
+ * @brief Internal state-machine states driven by the timer / GPIO ISRs.
+ *
+ * Roughly mirrors the DALI frame timing diagram: the TX states walk
+ * through the forward frame's half-bits, the SETTLING states wait out
+ * the inter-frame gap, and the WAITING / RECEIVING states sample the
+ * slave's backward frame.
+ */
+enum stateTag
 {
-  MS_IDLE = 0,                        // bus idle
-  MS_TX_SECOND_HALF_START_BIT,        //
-  MS_TX_DALI_FORWARD_FRAME,           // sending the dali forward frame
-  MS_TX_STOP_BITS,                    //
-  MS_SETTLING_BEFORE_BACKWARD,        // settling between forward and backward - stop bits
-  MS_SETTLING_BEFORE_IDLE,            // settling before going to idle, after forward frame
-  MS_WAITING_FOR_SLAVE_START_WINDOW,  // waiting for 7Te, start of slave Tx window
-  MS_WAITING_FOR_SLAVE_START,         // start of slave Tx window
-  MS_RECEIVING_ANSWER                 // receiving slave message
-} MASTER_STATE;
+  MS_IDLE = 0,                        // Bus idle, no transfer in progress.
+  MS_TX_SECOND_HALF_START_BIT,        // First (low) half-bit of start bit driven; about to drive the second (high) half.
+  MS_TX_DALI_FORWARD_FRAME,           // Shifting out the 32 Manchester half-bits of the forward frame.
+  MS_TX_STOP_BITS,                    // Forward frame complete, driving the 4 TE stop-bit idle period.
+  MS_SETTLING_BEFORE_BACKWARD,        // Stop bits done; waiting before opening the slave's response window.
+  MS_SETTLING_BEFORE_IDLE,            // Frame fully done; waiting out the post-frame settling time before MS_IDLE.
+  MS_WAITING_FOR_SLAVE_START_WINDOW,  // Inside the 7 TE "too early" guard window for the slave's first edge.
+  MS_WAITING_FOR_SLAVE_START,         // Inside the 23 TE window during which the slave is allowed to start.
+  MS_RECEIVING_ANSWER                 // Slave is transmitting; sampling its bi-phase edges.
+};
 
 
-// These helpers speak in terms of the DALI *bus* level (idle-high,
-// open-collector). They do NOT do any inversion themselves - the
-// physical TX/RX polarity is controlled per-pin from YAML via the
-// standard ESPHome `inverted:` sub-option:
-//
-//   tx_pin:
-//     number: 17
-//     inverted: true    # if driving the bus through an NPN/opto that
-//                       # pulls bus low when the GPIO is high.
-//   rx_pin:
-//     number: 16
-//     inverted: true    # if the RX optocoupler inverts the bus state.
-//
-// In code we always use bus-level semantics:
-//   digital_write(true)  -> bus high (idle, released)
-//   digital_write(false) -> bus low  (active, pulled down)
-//   digital_read()       -> true if bus is high, false if bus is low
-//
-// The pin abstraction takes care of the actual GPIO polarity. So toggle
-// `inverted:` in YAML rather than touching these functions.
-//
-// Both helpers are called from ISR and non-ISR context, so they always
-// use the ISR-safe pin and live in IRAM.
+/**
+ * @brief Bus-level TX / RX GPIO helpers.
+ *
+ * These helpers speak in terms of the DALI *bus* level (idle-high,
+ * open-collector). They do NOT do any inversion themselves - the
+ * physical TX/RX polarity is controlled per-pin from YAML via the
+ * standard ESPHome `inverted:` sub-option:
+ *
+ *   tx_pin:
+ *     number: 17
+ *     inverted: true    # if driving the bus through an NPN/opto that
+ *                       # pulls bus low when the GPIO is high.
+ *   rx_pin:
+ *     number: 16
+ *     inverted: true    # if the RX optocoupler inverts the bus state.
+ *
+ * In code we always use bus-level semantics:
+ *   digital_write(true)  -> bus high (idle, released)
+ *   digital_write(false) -> bus low  (active, pulled down)
+ *   digital_read()       -> true if bus is high, false if bus is low
+ *
+ * The pin abstraction takes care of the actual GPIO polarity. So toggle
+ * `inverted:` in YAML rather than touching these functions.
+ *
+ * All three helpers are called from ISR and non-ISR context, so they
+ * always use the ISR-safe pin and live in IRAM.
+ */
+
+/** @brief Release the DALI bus (drive it to the idle-high state). */
 static IRAM_ATTR inline void DALI_SetOutputHigh(DALIState *driver) {
   driver->tx_isr_pin.digital_write(true);
 }
 
+/** @brief Pull the DALI bus low (active state, asserting a half-bit). */
 static IRAM_ATTR inline void DALI_SetOutputLow(DALIState *driver) {
   driver->tx_isr_pin.digital_write(false);
 }
 
+/** @brief Sample the current DALI bus level. @return true if bus is high. */
 static IRAM_ATTR inline bool DALI_GetInput(DALIState *driver) {
   return driver->rx_isr_pin.digital_read();
 }
 
-
-/// Run timer interrupt code and return in how many µs the next event is expected
-/* the handling of the protocol is done in the IRQ */
-
+/**
+ * @brief Global driver pointer used by the timer ISR.
+ *
+ * The Arduino-ESP32 timer ISR signature takes no argument, so we route
+ * dispatch through this static pointer. Initialised in
+ * @ref DALIInterface::setup; only one instance is supported.
+ */
 DALIState *gbl_driver;
 
-// IRAM_ATTR is intentionally only on the definition below; placing it on
-// both the forward declaration and the definition makes GCC complain
-// about conflicting section attributes (.iram1.N counters).
+/**
+ * IRAM_ATTR is intentionally only on the definition below; placing it on
+ * both the forward declaration and the definition makes GCC complain
+ * about conflicting section attributes (.iram1.N counters).
+ */
 static void gpio_interrupt(DALIState *driver);
 
-static void IRAM_ATTR HOT timer_interrupt() // DALIState *driver);
+/**
+ * @brief Hardware-timer ISR driving the TX state machine and RX timeouts.
+ *
+ * Fires on every armed timer alarm. The current
+ * @ref DALIState::state value selects what work is done this tick:
+ *
+ *  - During TX (`MS_TX_*`), each tick clocks out one Manchester half-bit
+ *    of the forward frame (one full bit takes two timer alarms).
+ *  - During the settling and slave-window states (`MS_SETTLING_*`,
+ *    `MS_WAITING_*`), the alarm acts as a timeout: if it fires while
+ *    we're still waiting for the slave, we return to MS_IDLE.
+ *
+ * Runs entirely in IRAM (HOT + IRAM_ATTR) so it can execute while the
+ * flash cache is busy.
+ */
+static void IRAM_ATTR HOT timer_interrupt()
 {
   DALIState *driver = gbl_driver;
 
   switch(driver->state)
   {
     case MS_TX_SECOND_HALF_START_BIT:
-      /*
-       * Sending start bit
-       */
+      // Drive the second (high) half of the start bit.
       DALI_SetOutputHigh(driver);
       driver->bitcount = 0;
 
-      // Timer auto reloads and next waits TE
+      // Timer auto-reloads at TE for the first data half-bit.
       driver->state = MS_TX_DALI_FORWARD_FRAME;
 
       break;
 
     case MS_TX_DALI_FORWARD_FRAME:
-      /*
-       * Sending coded data bits
-       */
+      // Shift out the next Manchester half-bit (MSB first).
       if (driver->forward_frame & 0x80000000)
         DALI_SetOutputHigh(driver);
       else
@@ -147,52 +176,45 @@ static void IRAM_ATTR HOT timer_interrupt() // DALIState *driver);
       driver->forward_frame <<= 1;
       driver->bitcount++;
 
-      // End of data bits?
+      // All 32 half-bits emitted -> move on to the stop-bit idle period.
       if (driver->bitcount == 32)
         driver->state = MS_TX_STOP_BITS;
 
-      // Timer auto reloads and next waits TE
+      // Timer auto-reloads at TE for the next half-bit.
       break;
 
     case MS_TX_STOP_BITS:
-      /*
-       * Sending stop bits
-       */
-
-      // High state to free the bus
+      // Release the bus to high for the stop-bit idle period.
       DALI_SetOutputHigh(driver);
 
       // The first half of the first stop bit has just been output.
-      // Do we have to wait for an answer?
       if (driver->waitForAnswer)
       {
-        // Elapse until the end of the last half of the second stop bit
+        // Wait out the remainder of the 4 TE stop-bit window before
+        // opening the slave's response window.
         timerAlarm(driver->timer, 4 * TE, false, 0);
 
-        // Reset receive state - bitcount was used by the TX path.
+        // Reset RX state - bitcount was used by the TX path.
         driver->backward_frame = 0;
         driver->bitcount = 0;
         driver->state = MS_SETTLING_BEFORE_BACKWARD;
       }
       else
       {
-        // No answer from slave expected, need to wait for the remaining
-        // bus idle time before next forward frame.
-        // Add additional 3 TE to minimum specification to be not at the edge of the timing specification
+        // No slave response expected - just wait out the inter-frame
+        // idle time. Add 3 TE of margin on top of the spec minimum so
+        // we're not right at the edge of the timing tolerance.
         timerAlarm(driver->timer, (4 + 22 + 3) * TE, false, 0);
         driver->state = MS_SETTLING_BEFORE_IDLE;
       }
       break;
 
     case MS_SETTLING_BEFORE_BACKWARD:
-      /*
-       * Settling: 4*TE after the last forward-frame half-bit.
-       */
-
+      // 4 TE after the last forward-frame half-bit - bus is idle, now
+      // open the "too-early" guard window for the slave's first edge.
       DALI_SetOutputHigh(driver);
 
-      // Setup the first window limit for the slave answer.
-      // The slave should not respond before 7TE.
+      // The slave must NOT answer in the next 7 TE.
       timerAlarm(driver->timer, 7 * MIN_TE, false, 0);
 
       // The RX ISR is permanently attached (see setup()); state gating
@@ -204,80 +226,76 @@ static void IRAM_ATTR HOT timer_interrupt() // DALIState *driver);
       break;
 
     case MS_WAITING_FOR_SLAVE_START_WINDOW:
-      /*
-       *
-       */
-
-      // Setup the second window limit for the slave answer,
-      // slave must start transmit within the next 23TE window.
+      // Guard window elapsed without an early edge - now arm the proper
+      // 23 TE window during which the slave is allowed to start
+      // transmitting. Next event we expect is a GPIO interrupt.
       timerAlarm(driver->timer, 23 * MAX_TE, false, 0);
       driver->state = MS_WAITING_FOR_SLAVE_START;
-
-      // Next we should receive GPIO interrupts
       break;
 
     case MS_WAITING_FOR_SLAVE_START:
-      /*
-       * Receive timeout. Nothing was received in the slave window.
-       */
-
+      // 23 TE window expired with no slave edge -> receive timeout.
       timerStop(driver->timer);
       driver->state = MS_IDLE;
       break;
 
     case MS_RECEIVING_ANSWER:
-      /*
-       * Receive timeout in middle of frame.
-       */
-
-      // Idle the bus between backward and next forward frame. Since we
-      // don't track the last edge of the received frame, conservatively
-      // wait for 23 TE (>= the 22 TE specification minimum).
+      // Receive timeout in the middle of a frame. Idle the bus before
+      // the next forward frame: we don't track the last edge of the
+      // received frame, so conservatively wait 23 TE (>= the 22 TE
+      // specification minimum).
       timerAlarm(driver->timer, 23 * MAX_TE, false, 0);
       DALI_SetOutputHigh(driver);
       driver->state = MS_SETTLING_BEFORE_IDLE;
       break;
 
     case MS_SETTLING_BEFORE_IDLE:
-      /*
-       * Settling complete: bus is considered idle/available again.
-       */
-
+      // Post-frame settling complete - bus is idle / available again.
       timerStop(driver->timer);
       driver->state = MS_IDLE;
       break;
 
     default:
-      /*
-       * Unexpected timer in idle / TX states - reset.
-       */
+      // Unexpected timer alarm in idle / TX states - force a clean reset.
       DALI_SetOutputHigh(driver);
       timerStop(driver->timer);
       driver->state = MS_IDLE;
   }
 }
 
-
+/**
+ * @brief GPIO edge ISR for the RX pin, sampling the slave's backward frame.
+ *
+ * Attached once during @ref DALIInterface::setup with
+ * @c INTERRUPT_ANY_EDGE. The handler is state-gated: edges outside the
+ * `MS_WAITING_FOR_*` and `MS_RECEIVING_ANSWER` states are ignored, so we
+ * never have to attach/detach the interrupt around individual transfers
+ * (which is not ISR-safe anyway).
+ *
+ * Each edge is timestamped using the hardware timer; the resulting pulse
+ * width determines whether we just received one TE (single half-bit) or
+ * two TE (a bit transition that "swallows" two half-bits of the same
+ * level), and the level at the edge picks which Manchester pair we add
+ * to @ref DALIState::backward_frame.
+ */
 static void IRAM_ATTR HOT gpio_interrupt(DALIState *driver)
 {
   switch (driver->state) {
     case MS_WAITING_FOR_SLAVE_START_WINDOW:
-      /*
-       * The slave should not have answered yet, it came too early.
-       */
+      // Slave answered too early - inside the 7 TE guard window.
+      // Abort and let the host wait-loop see MS_IDLE.
       timerStop(driver->timer);
       driver->state = MS_IDLE;
       break;
 
     case MS_WAITING_FOR_SLAVE_START: {
-      /*
-       * We got an edge (he first half bit of START), so the slave is transmitting now.
-       */
+      // First edge of the backward frame's start bit. Slave is now
+      // actively transmitting.
 
-      // Set receive timeout time.
+      // Arm the overall receive timeout (full frame must fit in ~22 TE).
       timerAlarm(driver->timer, 22 * MAX_TE, false, 0);
 
-      // Clear timer counter so we can measure the pulse length
+      // Reset the timer count so the next edge gives us a pulse width.
       timerWrite(driver->timer, 0);
 
       driver->backward_frame <<= 1;
@@ -286,25 +304,19 @@ static void IRAM_ATTR HOT gpio_interrupt(DALIState *driver)
       if (DaliBusLevel)
         driver->backward_frame |= BI_PHASE_HIGH;
 
-      // Increment bit counter by 1
       driver->bitcount += 1;
       driver->state = MS_RECEIVING_ANSWER;
       break;
     }
     case MS_RECEIVING_ANSWER: {
-      /*
-       * Received a next edge
-       */
-
-      // Get current bus level and the length of the pulse
+      // Subsequent edge inside the backward frame - classify by width.
       bool DaliBusLevel = DALI_GetInput(driver);
       uint32_t CT = timerRead(driver->timer);
       timerWrite(driver->timer, 0);
 
-      // Check the pulse width for TE or 2TE time
       if (MIN_2TE < CT && CT < MAX_2TE)
       {
-        // This is a 2TE pulse, we need to shift to bits shift both bits to the left...
+        // 2 TE pulse: spans two half-bits at the same level.
         driver->backward_frame <<= 2;
 
         if (DaliBusLevel)
@@ -312,24 +324,21 @@ static void IRAM_ATTR HOT gpio_interrupt(DALIState *driver)
         else
           driver->backward_frame |= BI_PHASE_LOW;
 
-        // increment position counter by 2
         driver->bitcount += 2;
       }
       else if (MIN_TE < CT && CT < MAX_TE)
       {
-        // This is a TE pulse, we just need to shift one bit == current LEVEL
-        // shift one bit to the left...
+        // 1 TE pulse: single half-bit at the new level.
         driver->backward_frame <<= 1;
 
         if (DaliBusLevel)
           driver->backward_frame |= BI_PHASE_HIGH;
 
-        // Increment position counter by 1
         driver->bitcount += 1;
       }
       else
       {
-        // Pulse is not a valid DALI bi-phase pulse. Abort the receive
+        // Pulse is not a valid DALI bi-phase width. Abort the receive
         // and let the host wait-loop see MS_IDLE.
         timerStop(driver->timer);
         driver->bitcount = 0;
@@ -338,11 +347,10 @@ static void IRAM_ATTR HOT gpio_interrupt(DALIState *driver)
         break;
       }
 
-      // Check if we have received all bits...
       if (driver->bitcount == BACKWARD_FRAME_BIT_LENGTH)
       {
-        // Frame complete - wait for the post-frame idle time, then go
-        // back to MS_IDLE via the settling state.
+        // Frame complete - wait for the post-frame idle time before
+        // returning to MS_IDLE via MS_SETTLING_BEFORE_IDLE.
         timerWrite(driver->timer, 0);
         timerAlarm(driver->timer, 22 * MAX_TE, false, 0);
         driver->state = MS_SETTLING_BEFORE_IDLE;
@@ -352,11 +360,10 @@ static void IRAM_ATTR HOT gpio_interrupt(DALIState *driver)
     }
 
     default:
+      // Spurious edge in idle / TX states - ignored.
       break;
   }
 }
-
-
 
 void DALIInterface::setup()
 {
@@ -434,6 +441,11 @@ void DALIInterface::dump_config()
   LOG_PIN("  rx_pin: ", this->driver_.rx_pin);
 }
 
+/**
+ * @brief Manchester-encode a 16-bit forward-frame payload.
+ *
+ * See the matching declaration in `dali.h` for the bi-phase mapping.
+ */
 uint32_t DALIInterface::DALI_Encode(uint16_t forwardFrame)
 {
   uint32_t coded = 0;
@@ -455,10 +467,6 @@ uint32_t DALIInterface::DALI_Encode(uint16_t forwardFrame)
 
 bool DALIInterface::DALI_Decode(uint32_t rawData, uint8_t *pBackwardFrame)
 {
-  // The raw data is built up LSB-first in the ISR: the first received
-  // bi-phase pair (data bit 7) ends up in bits[15:14] and the last
-  // pair (data bit 0) ends up in bits[1:0]. Decode from LSB up and
-  // assemble the result with data bit 0 at the LSB of the output.
   uint8_t backward_frame = 0;
   for (int i = 0; i < 8; i++)
   {
@@ -478,7 +486,6 @@ bool DALIInterface::DALI_Decode(uint32_t rawData, uint8_t *pBackwardFrame)
   *pBackwardFrame = backward_frame;
   return true;
 }
-
 
 void DALIInterface::search()
 {
@@ -711,10 +718,15 @@ void DALIInterface::read_memory(uint8_t address, uint8_t location, uint8_t bank)
   }
 }
 
-// All four helpers below send DT8 (colour) commands. DT8 commands must
-// (a) be addressed as commands (selector bit S = 1, i.e. | 0x0100) and
-// (b) be immediately preceded by ENABLE_DEVICE_TYPE 8, which only affects
-// the *next* command - so it must be repeated for every DT8 frame sent.
+// ============================================================================
+// DT8 (colour control) helpers.
+//
+// DT8 commands must:
+//   (a) be addressed as commands (selector bit S = 1, i.e. | 0x0100), and
+//   (b) be immediately preceded by ENABLE_DEVICE_TYPE 8, which only
+//       affects the *next* command - so it must be repeated for every
+//       DT8 frame sent.
+// ============================================================================
 
 void DALIInterface::send_xcoord(uint8_t address, unsigned int coord)
 {
@@ -775,10 +787,6 @@ void DALIInterface::set_device_type(uint8_t device_type)
 
 uint16_t DALIInterface::query_colour_value(uint8_t address, QueryColourValue query)
 {
-  // IEC 62386-209 §6.13 (cmd 250 QUERY COLOUR VALUE):
-  //   1. DTR0 := <query> (selector for which colour value to return)
-  //   2. send QUERY COLOUR VALUE; response = MSB of selected value
-  //   3. send QUERY CONTENT DTR0; response = LSB of selected value
   send_forward_frame((DALI_CMD_DTR0_DATA << 8) | query);
   send_forward_frame((DALI_CMD_ENABLE_DEVICE_TYPE << 8) | 8);
 
