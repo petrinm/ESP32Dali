@@ -2,6 +2,7 @@
 
 #include "dali.h"
 #include "dali_cmds.h"
+
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
@@ -487,13 +488,209 @@ bool DALIInterface::DALI_Decode(uint32_t raw_data, uint8_t *backward_frame_out)
   return true;
 }
 
+void DALIInterface::send_special_command(uint8_t opcode, uint8_t data, bool send_twice)
+{
+  send_forward_frame((static_cast<uint16_t>(opcode) << 8) | data, send_twice);
+}
+
+bool DALIInterface::send_special_query(uint8_t opcode, uint8_t data)
+{
+  uint8_t response;
+  if (!send_forward_frame((static_cast<uint16_t>(opcode) << 8) | data, response)) {
+    return false;
+  }
+  return response == 0xFF;
+}
+
+void DALIInterface::commissioning_terminate() {
+  send_special_command(DALI_CMD_TERMINATE);
+}
+
+void DALIInterface::commissioning_initialise_unaddressed()
+{
+  send_special_command(DALI_CMD_INITIALISE, 0xFF, true);
+}
+
+void DALIInterface::commissioning_initialise_all() {
+  send_special_command(DALI_CMD_INITIALISE, 0x00, true);
+}
+
+void DALIInterface::commissioning_randomise() {
+  send_special_command(DALI_CMD_RANDOMIZE, 0, true);
+}
+
+void DALIInterface::commissioning_set_search_address(uint32_t addr24)
+{
+  send_special_command(DALI_CMD_SEARCH_ADDRH, (addr24 >> 16) & 0xFF);
+  send_special_command(DALI_CMD_SEARCH_ADDRM, (addr24 >> 8) & 0xFF);
+  send_special_command(DALI_CMD_SEARCH_ADDRL, addr24 & 0xFF);
+}
+
+bool DALIInterface::commissioning_compare() {
+  return send_special_query(DALI_CMD_COMPARE);
+}
+
+void DALIInterface::commissioning_withdraw() {
+  send_special_command(DALI_CMD_WITHDRAW);
+}
+
+void DALIInterface::commissioning_program_short_address(uint8_t short_address)
+{
+  if (short_address > 63) {
+    ESP_LOGW(TAG, "commissioning_program_short_address: invalid address %u", short_address);
+    return;
+  }
+  send_special_command(DALI_CMD_PROGRAM_SHORT_ADDRESS, static_cast<uint8_t>((short_address << 1) | 0x01), true);
+}
+
+bool DALIInterface::find_next_random_address_(uint32_t low, uint32_t high, uint32_t *found)
+{
+  if (found == nullptr || low > high) {
+    return false;
+  }
+
+  if (low == high) {
+    commissioning_set_search_address(low);
+    if (!commissioning_compare()) {
+      return false;
+    }
+    *found = low;
+    return true;
+  }
+
+  commissioning_set_search_address(high);
+  if (!commissioning_compare()) {
+    return false;
+  }
+
+  const uint32_t mid = low + (high - low) / 2;
+  if (find_next_random_address_(low, mid, found)) {
+    return true;
+  }
+  return find_next_random_address_(mid + 1, high, found);
+}
+
+size_t DALIInterface::discover_random_addresses_(std::vector<uint32_t> &addresses, bool broadcast_initialise,
+                                                 bool withdraw_each)
+{
+  addresses.clear();
+
+  if (driver_.rx_pin == nullptr) {
+    ESP_LOGE(TAG, "discover_random_addresses_: rx_pin is required");
+    return 0;
+  }
+
+  commissioning_terminate();
+  if (broadcast_initialise) {
+    commissioning_initialise_all();
+  } else {
+    commissioning_initialise_unaddressed();
+  }
+  commissioning_randomise();
+  delay(100);
+
+  uint32_t search_from = 0;
+  constexpr uint32_t k_max_random = 0xFFFFFF;
+
+  while (search_from <= k_max_random) {
+    uint32_t found = 0;
+    if (!find_next_random_address_(search_from, k_max_random, &found)) {
+      break;
+    }
+
+    addresses.push_back(found);
+
+    if (withdraw_each) {
+      commissioning_set_search_address(found);
+      commissioning_withdraw();
+    }
+
+    if (found == k_max_random) {
+      break;
+    }
+    search_from = found + 1;
+  }
+
+  commissioning_terminate();
+  return addresses.size();
+}
+
 void DALIInterface::search()
 {
-  // TODO: implement ballast discovery using the INITIALISE / RANDOMISE /
-  //       COMPARE / SEARCHADDR / PROGRAM_SHORT_ADDRESS sequence from
-  //       IEC 62386-102 section 9.4. See for reference:
-  //   https://github.com/sde1000/python-dali/blob/master/examples/find_ballasts.py
-  ESP_LOGW(TAG, "search(): not implemented yet");
+  std::vector<uint32_t> addresses;
+  const size_t count = discover_random_addresses_(addresses, false, true);
+  ESP_LOGI(TAG, "search(): found %u unaddressed device(s)", count);
+  for (uint32_t addr : addresses) {
+    ESP_LOGI(TAG, "  random address 0x%06X", addr);
+  }
+}
+
+void DALIInterface::identify_device(uint8_t address)
+{
+  ESP_LOGI(TAG, "identify_device: address=%u", address);
+  send_forward_frame((0x7f & address) << 9 | 0x0100 | DALI_CMD_IDENTIFY_DEVICE, true);
+}
+
+size_t DALIInterface::commission_unaddressed_gear(uint8_t start_short_address, uint8_t max_devices,
+                                                  bool assign_addresses)
+{
+  if (driver_.rx_pin == nullptr) {
+    ESP_LOGE(TAG, "commission_unaddressed_gear: rx_pin is required");
+    return 0;
+  }
+
+  if (max_devices == 0) {
+    return 0;
+  }
+
+  if (assign_addresses && start_short_address > 63) {
+    ESP_LOGE(TAG, "commission_unaddressed_gear: start_short_address must be 0..63");
+    return 0;
+  }
+
+  commissioning_terminate();
+  commissioning_initialise_unaddressed();
+  commissioning_randomise();
+  delay(100);
+
+  size_t processed = 0;
+  uint32_t search_from = 0;
+  uint8_t next_short = start_short_address;
+  constexpr uint32_t k_max_random = 0xFFFFFF;
+
+  while (processed < max_devices && search_from <= k_max_random) {
+    uint32_t found = 0;
+    if (!find_next_random_address_(search_from, k_max_random, &found)) {
+      break;
+    }
+
+    commissioning_set_search_address(found);
+
+    if (assign_addresses) {
+      if (next_short > 63) {
+        ESP_LOGW(TAG, "commission_unaddressed_gear: ran out of short addresses");
+        commissioning_withdraw();
+        break;
+      }
+      commissioning_program_short_address(next_short);
+      ESP_LOGI(TAG, "commission: short address %u <- random 0x%06X", next_short, found);
+      next_short++;
+    } else {
+      ESP_LOGI(TAG, "commission: random address 0x%06X (no short address assigned)", found);
+    }
+
+    commissioning_withdraw();
+    processed++;
+
+    if (found == k_max_random) {
+      break;
+    }
+    search_from = found + 1;
+  }
+
+  commissioning_terminate();
+  ESP_LOGI(TAG, "commission_unaddressed_gear: %u device(s) processed", processed);
+  return processed;
 }
 
 bool DALIInterface::do_transfer_(uint16_t forward_frame, bool expect_response, uint8_t *response)

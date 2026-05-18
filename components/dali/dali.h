@@ -3,6 +3,7 @@
 #if defined(USE_ARDUINO) && defined(USE_ESP32)
 
 #include <stdint.h>
+#include <vector>
 
 #include "esphome/core/component.h"
 #include "esphome/core/gpio.h"
@@ -278,11 +279,31 @@ class DALIInterface: public Component {
   float get_setup_priority() const override { return setup_priority::BUS; }
 
   /**
-   * @brief Run DALI address discovery / commissioning.
+   * @brief Run DALI random-address discovery on unaddressed gear.
    *
-   * @note Currently a stub - logs a warning when invoked.
+   * Requires @c rx_pin. Logs each 24-bit random address found.
    */
   void search();
+
+  /**
+   * @brief IEC 62386-102 IDENTIFY DEVICE on one short address.
+   *
+   * @param address 7-bit short address (0..63).
+   */
+  void identify_device(uint8_t address);
+
+  /**
+   * @brief Discover unaddressed gear and optionally assign short addresses.
+   *
+   * Uses INITIALISE (unaddressed only) / RANDOMISE / COMPARE / SEARCHADDR /
+   * WITHDRAW / PROGRAM_SHORT_ADDRESS / TERMINATE. Requires @c rx_pin.
+   *
+   * @param start_short_address First short address to assign (0..63).
+   * @param max_devices Maximum number of devices to program.
+   * @param assign_addresses If @c true, program sequential short addresses.
+   * @return Number of devices discovered (and programmed when enabled).
+   */
+  size_t commission_unaddressed_gear(uint8_t start_short_address, uint8_t max_devices, bool assign_addresses);
 
   /**
    * @brief Configure the GPIO used for the open-collector TX driver.
@@ -597,6 +618,31 @@ class DALIInterface: public Component {
    *       command, so it must be re-sent before every DTx frame.
    */
   void set_device_type(uint8_t device_type);
+
+  /**
+   * @brief Send a DALI special command (16-bit opcode|data frame).
+   */
+  void send_special_command(uint8_t opcode, uint8_t data = 0, bool send_twice = false);
+
+  /**
+   * @brief Send a special command that expects a YES/NO backward frame.
+   *
+   * @return @c true when the gear answers YES (backward frame 0xFF).
+   */
+  bool send_special_query(uint8_t opcode, uint8_t data = 0);
+
+  void commissioning_terminate();
+  void commissioning_initialise_unaddressed();
+  void commissioning_initialise_all();
+  void commissioning_randomise();
+  void commissioning_set_search_address(uint32_t addr24);
+  bool commissioning_compare();
+  void commissioning_withdraw();
+  void commissioning_program_short_address(uint8_t short_address);
+
+  bool find_next_random_address_(uint32_t low, uint32_t high, uint32_t *found);
+  size_t discover_random_addresses_(std::vector<uint32_t> &addresses, bool broadcast_initialise,
+                                    bool withdraw_each);
 
  protected:
 

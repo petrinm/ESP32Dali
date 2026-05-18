@@ -1,6 +1,6 @@
 #pragma once
 
-#if defined(USE_ARDUINO) && defined(USE_ESP32)
+#if defined(USE_ARDUINO) && defined(USE_ESP32) && defined(USE_LIGHT)
 
 #include "esphome/components/light/light_output.h"
 #include "esphome/components/light/light_transformer.h"

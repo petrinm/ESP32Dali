@@ -1,4 +1,6 @@
-#if defined(USE_ARDUINO) && defined(USE_ESP32)
+#include "esphome.h"
+
+#if defined(USE_ARDUINO) && defined(USE_ESP32) && defined(USE_LIGHT)
 
 #include "dali_light.h"
 #include "esphome/components/light/light_color_values.h"
