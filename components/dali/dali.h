@@ -396,19 +396,24 @@ class DALIInterface: public Component {
   void set_on_power_level(uint8_t address, uint8_t level);
 
   /**
+   * @brief Configure arc-power fade duration from a physical time.
+   *
+   * Maps @p duration_ms to IEC 62386-102 fade-time index 1..15 when the
+   * duration fits (~0.7 s .. ~90 s for a full 0..254 level change), or to
+   * extended fade time (IEC 62386-102:2014, up to ~16 min) for longer fades.
+   * A duration of 0 selects the shortest gear fade (instant for typical gear).
+   *
+   * @param address 7-bit DALI address.
+   * @param duration_ms Fade duration in milliseconds.
+   * @note Configuration command(s) - transmitted twice.
+   */
+  void configure_fade_duration(uint8_t address, uint32_t duration_ms);
+
+  /**
    * @brief Configure the gear's fade time (used by DAPC, scenes, etc.).
    *
-   * 4-bit DALI fade-time index. The actual fade time is non-linear:
-   *
-   *      0  no fade (instant)
-   *      1  0.707 s          8  8.000 s
-   *      2  1.000 s          9  11.31 s
-   *      3  1.414 s         10  16.00 s
-   *      4  2.000 s         11  22.63 s
-   *      5  2.828 s         12  32.00 s
-   *      6  4.000 s         13  45.25 s
-   *      7  5.657 s (def.)  14  64.00 s
-   *                         15  90.51 s
+   * 4-bit DALI fade-time index. Index 0 selects extended fade time instead.
+   * Prefer @ref configure_fade_duration for physical units.
    *
    * @param address 7-bit DALI address.
    * @param fade_time Fade-time index, 0..15.
@@ -437,15 +442,15 @@ class DALIInterface: public Component {
   void set_fade_rate(uint8_t address, uint8_t fade_rate);
 
   /**
-   * @brief Configure the extended fade time.
+   * @brief Configure the extended fade time (DTR0 byte).
    *
-   * Allows fades shorter than @ref set_fade_time can express. Encoded
-   * per IEC 62386-102 §9.5.7 as `(multiplier << 4) | base`.
+   * Encoded per IEC 62386-102 as `(multiplier << 4) | base`. Used when
+   * fade-time index is 0. Value @c 0x50 disables extended fade.
    *
    * @param address 7-bit DALI address.
-   * @param fade_time Encoded extended-fade-time byte.
+   * @param encoded Extended-fade-time DTR0 value.
    */
-  void set_extended_fade_time(uint8_t address, uint8_t fade_time);
+  void set_extended_fade_time(uint8_t address, uint8_t encoded);
 
   /**
    * @brief Store a level into one of the gear's scenes.

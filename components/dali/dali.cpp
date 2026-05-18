@@ -635,6 +635,91 @@ void DALIInterface::set_on_power_level(uint8_t address, uint8_t level)
   send_forward_frame((0x7f & address) << 9 | 0x0100 | DALI_CMD_SET_POWER_ON_LEVEL, true);
 }
 
+namespace {
+
+/** Full 0..254 sweep duration per fade-time index, IEC 62386-102 Table 4. */
+static constexpr uint32_t STANDARD_FADE_DURATION_MS[16] = {
+    0,     // 0 - use extended fade time
+    707,   // 1  0.707 s
+    1000,  // 2  1.000 s
+    1414,  // 3  1.414 s
+    2000,  // 4  2.000 s
+    2828,  // 5  2.828 s
+    4000,  // 6  4.000 s
+    5657,  // 7  5.657 s
+    8000,  // 8  8.000 s
+    11310, // 9  11.31 s
+    16000, // 10 16.00 s
+    22630, // 11 22.63 s
+    32000, // 12 32.00 s
+    45250, // 13 45.25 s
+    64000, // 14 64.00 s
+    90510, // 15 90.51 s
+};
+
+uint8_t closest_standard_fade_index(uint32_t duration_ms) {
+  uint8_t best = 1;
+  uint32_t best_diff = UINT32_MAX;
+  for (uint8_t i = 1; i <= 15; i++) {
+    const uint32_t t = STANDARD_FADE_DURATION_MS[i];
+    const uint32_t diff = (t > duration_ms) ? (t - duration_ms) : (duration_ms - t);
+    if (diff < best_diff) {
+      best_diff = diff;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/** Extended fade: T_ms = 100 * (base + 1) * 10^multiplier (multiplier 1..7). */
+bool encode_extended_fade_duration_ms(uint32_t duration_ms, uint8_t *encoded_out) {
+  uint32_t best_diff = UINT32_MAX;
+  uint8_t best_base = 0;
+  uint8_t best_mult = 1;
+
+  for (uint8_t mult = 1; mult <= 7; mult++) {
+    const uint32_t scale = (uint32_t) powf(10.0f, (float) mult);
+    for (uint8_t base = 0; base <= 15; base++) {
+      const uint32_t t = 100u * (uint32_t) (base + 1) * scale;
+      const uint32_t diff = (t > duration_ms) ? (t - duration_ms) : (duration_ms - t);
+      if (diff < best_diff) {
+        best_diff = diff;
+        best_base = base;
+        best_mult = mult;
+      }
+    }
+  }
+
+  *encoded_out = (uint8_t) ((best_mult << 4) | best_base);
+  return true;
+}
+
+}  // namespace
+
+void DALIInterface::configure_fade_duration(uint8_t address, uint32_t duration_ms)
+{
+  if (duration_ms == 0) {
+    ESP_LOGD(TAG, "configure_fade_duration: address=%d, instant", address);
+    this->set_extended_fade_time(address, 0x50);
+    this->set_fade_time(address, 0);
+    return;
+  }
+
+  if (duration_ms <= STANDARD_FADE_DURATION_MS[15]) {
+    const uint8_t index = closest_standard_fade_index(duration_ms);
+    ESP_LOGD(TAG, "configure_fade_duration: address=%d, %u ms -> fade_time index %u (~%u ms)", address, duration_ms,
+             index, STANDARD_FADE_DURATION_MS[index]);
+    this->set_fade_time(address, index);
+    return;
+  }
+
+  uint8_t encoded = 0;
+  encode_extended_fade_duration_ms(duration_ms, &encoded);
+  ESP_LOGD(TAG, "configure_fade_duration: address=%d, %u ms -> extended 0x%02X", address, duration_ms, encoded);
+  this->set_extended_fade_time(address, encoded);
+  this->set_fade_time(address, 0);
+}
+
 void DALIInterface::set_fade_time(uint8_t address, uint8_t fade_time)
 {
   ESP_LOGD(TAG, "set_fade_time: address=%d, fade_time=%d", address, fade_time);

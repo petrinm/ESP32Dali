@@ -15,8 +15,6 @@ CONF_INTERFACE = "interface"
 CONF_ADDRESS = "address"
 CONF_GROUP = "group"
 CONF_BROADCAST = "broadcast"
-CONF_FADERATE = "faderate"
-CONF_FADETIME = "fadetime"
 CONF_COLD_WHITE_ADDRESS = "cold_white_address"
 CONF_WARM_WHITE_ADDRESS = "warm_white_address"
 CONF_DT8_RGB = "dt8_rgb"
@@ -92,8 +90,6 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_BROADCAST): cv.boolean,
             cv.Optional(CONF_COLD_WHITE_ADDRESS): cv.int_range(min=0, max=63),
             cv.Optional(CONF_WARM_WHITE_ADDRESS): cv.int_range(min=0, max=63),
-            cv.Optional(CONF_FADERATE): cv.int_range(min=0, max=15),
-            cv.Optional(CONF_FADETIME): cv.int_range(min=0, max=15),
             cv.Optional(CONF_COLD_WHITE_COLOR_TEMPERATURE): cv.color_temperature,
             cv.Optional(CONF_WARM_WHITE_COLOR_TEMPERATURE): cv.color_temperature,
             cv.Optional(CONF_DT8_RGB, default=False): cv.boolean,
@@ -135,11 +131,6 @@ async def to_code(config):
 
         if CONF_COLD_WHITE_COLOR_TEMPERATURE in config:
             cg.add(var.set_ct_mode(CtMode.DT8_CT))
-
-    if CONF_FADERATE in config:
-        cg.add(var.set_fade_rate(config[CONF_FADERATE]))
-    if CONF_FADETIME in config:
-        cg.add(var.set_fade_time(config[CONF_FADETIME]))
 
     if CONF_COLD_WHITE_COLOR_TEMPERATURE in config:
         cg.add(var.set_min_mireds(config[CONF_COLD_WHITE_COLOR_TEMPERATURE]))

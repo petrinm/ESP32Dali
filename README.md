@@ -48,8 +48,7 @@ light:
     name: "LED strip"
     interface: dali_if
     address: 5
-    fadetime: 7
-    faderate: 2
+    default_transition_length: 1s   # converted to DALI fade time on the gear
 
 # Dual DAPC CT (two DAPC channels, two short addresses):
 # - platform: dali
@@ -59,10 +58,8 @@ light:
 #   warm_white_address: 1
 #   cold_white_color_temperature: 6536 K
 #   warm_white_color_temperature: 2000 K
-#   fadetime: 7
-#   faderate: 2
 
-# DT8 colour gear on one address (DAPC + DT8 colour temperature command):
+# DT8 CT on one address (DAPC + DT8 colour temperature command):
 # - platform: dali
 #   name: "DT8 lamp"
 #   interface: dali_if
@@ -76,8 +73,13 @@ light:
 #   interface: dali_if
 #   address: 3
 #   dt8_rgb: true
-#   fadetime: 7
-#   faderate: 2
+
+# Long sunrise (up to ~16 min uses DALI extended fade time on supported gear):
+# - platform: dali
+#   name: "Slow dim"
+#   interface: dali_if
+#   address: 5
+#   default_transition_length: 15min
 ```
 
 Build and flash with:

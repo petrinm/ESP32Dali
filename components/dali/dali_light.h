@@ -3,11 +3,31 @@
 #if defined(USE_ARDUINO) && defined(USE_ESP32)
 
 #include "esphome/components/light/light_output.h"
+#include "esphome/components/light/light_transformer.h"
 #include "esphome/core/component.h"
+#include "esphome/core/helpers.h"
 #include "dali.h"
 
 namespace esphome {
 namespace DALI {
+
+class DALILight;
+
+/**
+ * @brief DALI gear-native transition: one bus command, gear ramps over @c length_.
+ */
+class DALILightTransitionTransformer : public light::LightTransformer {
+ public:
+  explicit DALILightTransitionTransformer(DALILight *light) : light_(light) {}
+
+  optional<light::LightColorValues> apply() override;
+
+  bool is_finished() override { return this->get_progress_() >= 1.0f; }
+
+ protected:
+  DALILight *light_;
+  bool sent_{false};
+};
 
 /**
  * @brief How tunable-white colour is driven on the bus.
@@ -22,11 +42,9 @@ enum class CtMode : uint8_t {
 /**
  * @brief ESPHome light platform for a single DALI control gear.
  *
- * Supports plain dimming, DT8 colour temperature or RGB on one address, and
- * dual-channel tunable white (cold + warm on two short addresses, DAPC only).
- *
- * Bus I/O is deferred to @ref loop at a fixed cadence so @ref write_state
- * stays non-blocking.
+ * Fade duration comes from ESPHome transitions (@c transition_length /
+ * @c default_transition_length) in milliseconds. @ref DALIInterface maps that
+ * to standard or extended DALI fade before each arc-power change.
  */
 class DALILight : public light::LightOutput, public Component {
  public:
@@ -36,15 +54,14 @@ class DALILight : public light::LightOutput, public Component {
 
   light::LightTraits get_traits() override;
   void write_state(light::LightState *state) override;
+  void setup_state(light::LightState *state) override;
+  std::unique_ptr<light::LightTransformer> create_default_transition() override;
 
   void set_interface(DALIInterface *interface) { interface_ = interface; }
 
   void set_address(int address) { address_ = address & 0x3F; }
   void set_group(int group) { address_ = 0x40 | (group & 0xF); }
   void set_broadcast() { address_ = 0x7F; }
-
-  void set_fade_time(int fade_time) { fadetime_ = fade_time; }
-  void set_fade_rate(int fade_rate) { faderate_ = fade_rate; }
 
   void set_ct_mode(CtMode mode) { ct_mode_ = mode; }
 
@@ -54,27 +71,34 @@ class DALILight : public light::LightOutput, public Component {
   void set_cold_white_address(int address) { cold_white_address_ = address & 0x3F; }
   void set_warm_white_address(int address) { warm_white_address_ = address & 0x3F; }
 
+  /** Called by @ref DALILightTransitionTransformer on transition start. */
+  void write_state_for_transition_(const light::LightColorValues &target, uint32_t duration_ms);
+
  protected:
   static constexpr uint32_t MIN_SEND_INTERVAL_MS = 500;
 
   uint8_t brightness_to_level_(float brightness) const;
   uint16_t ct_to_kelvin_(float color_temperature) const;
-  void write_state_dual_channel_(light::LightState *state);
-  void configure_gear_fade_(int address);
+  void populate_targets_from_values_(const light::LightColorValues &values);
+  void write_state_dual_channel_(const light::LightColorValues &values);
+  void configure_fade_if_needed_(int address);
   void flush_();
 
   DALIInterface *interface_{nullptr};
+  light::LightState *light_state_{nullptr};
 
   CtMode ct_mode_{CtMode::NONE};
 
   int address_{0x7F};
   int cold_white_address_{0};
   int warm_white_address_{1};
-  int fadetime_{1};
-  int faderate_{2};
 
   float min_mireds_{0};
   float max_mireds_{0};
+
+  uint32_t pending_fade_duration_ms_{0};
+  int last_fade_address_{-1};
+  uint32_t last_fade_duration_ms_{UINT32_MAX};
 
   // Single-channel dim or DT8 brightness.
   uint8_t target_level_{0};
