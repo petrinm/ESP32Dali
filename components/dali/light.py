@@ -19,7 +19,7 @@ CONF_COLD_WHITE_ADDRESS = "cold_white_address"
 CONF_WARM_WHITE_ADDRESS = "warm_white_address"
 CONF_DT8_RGB = "dt8_rgb"
 
-CtMode = DALI_ns.enum("CtMode")
+ColorMode = DALI_ns.enum("ColorMode")
 
 DALILight = DALI_ns.class_("DALILight", light.LightOutput, cg.Component)
 
@@ -110,11 +110,11 @@ async def to_code(config):
     cg.add(var.set_interface(interface))
 
     if CONF_COLD_WHITE_ADDRESS in config:
-        cg.add(var.set_ct_mode(CtMode.DUAL_DAPC_CT))
+        cg.add(var.set_color_mode(ColorMode.DUAL_DAPC_CT))
         cg.add(var.set_cold_white_address(config[CONF_COLD_WHITE_ADDRESS]))
         cg.add(var.set_warm_white_address(config[CONF_WARM_WHITE_ADDRESS]))
     elif config.get(CONF_DT8_RGB, False):
-        cg.add(var.set_ct_mode(CtMode.DT8_RGB))
+        cg.add(var.set_color_mode(ColorMode.DT8_RGB))
         if CONF_ADDRESS in config:
             cg.add(var.set_address(config[CONF_ADDRESS]))
         elif CONF_GROUP in config:
@@ -130,7 +130,7 @@ async def to_code(config):
             cg.add(var.set_broadcast())
 
         if CONF_COLD_WHITE_COLOR_TEMPERATURE in config:
-            cg.add(var.set_ct_mode(CtMode.DT8_CT))
+            cg.add(var.set_color_mode(ColorMode.DT8_CT))
 
     if CONF_COLD_WHITE_COLOR_TEMPERATURE in config:
         cg.add(var.set_min_mireds(config[CONF_COLD_WHITE_COLOR_TEMPERATURE]))

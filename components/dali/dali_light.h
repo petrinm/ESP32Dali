@@ -32,7 +32,7 @@ class DALILightTransitionTransformer : public light::LightTransformer {
 /**
  * @brief How tunable-white colour is driven on the bus.
  */
-enum class CtMode : uint8_t {
+enum class ColorMode : uint8_t {
   NONE = 0,          ///< Dim only (DAPC on one address).
   DT8_CT = 1,        ///< Single DT8 gear: DAPC + IEC 62386-209 colour temperature.
   DUAL_DAPC_CT = 2,  ///< Two DAPC channels on separate cold / warm short addresses.
@@ -63,7 +63,7 @@ class DALILight : public light::LightOutput, public Component {
   void set_group(int group) { address_ = 0x40 | (group & 0xF); }
   void set_broadcast() { address_ = 0x7F; }
 
-  void set_ct_mode(CtMode mode) { ct_mode_ = mode; }
+  void set_color_mode(ColorMode mode) { color_mode_ = mode; }
 
   void set_min_mireds(float min_mireds) { min_mireds_ = min_mireds; }
   void set_max_mireds(float max_mireds) { max_mireds_ = max_mireds; }
@@ -87,7 +87,7 @@ class DALILight : public light::LightOutput, public Component {
   DALIInterface *interface_{nullptr};
   light::LightState *light_state_{nullptr};
 
-  CtMode ct_mode_{CtMode::NONE};
+  ColorMode color_mode_{ColorMode::NONE};
 
   int address_{0x7F};
   int cold_white_address_{0};
